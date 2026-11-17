@@ -438,39 +438,114 @@ def _open_parse_hawb_charges_grid(driver):
 
 
 def _open_breakbulk_search_mawb(ctx, mawb_no):
-    """Target MAWB: type the MAWB into the Breakbulk MAWB input (no ETA / IC) and press SEARCH."""
+    """Target MAWB: clear any pre-filled ETA, type MAWB into Breakbulk MAWB input (no ETA / IC), and press SEARCH."""
     driver, wait = ctx.driver, ctx.wait
+
+    for d_inp in driver.find_elements(By.CSS_SELECTOR, "input.k-textbox[placeholder='dd/MM/yyyy']"):
+        try:
+            if not d_inp.is_displayed():
+                continue
+            cur_val = (d_inp.get_attribute("value") or driver.execute_script("return arguments[0].value;", d_inp) or "").strip()
+            if cur_val:
+                try:
+                    d_inp.click()
+                except Exception:
+                    driver.execute_script("arguments[0].click();", d_inp)
+                time.sleep(0.1)
+                d_inp.send_keys(Keys.CONTROL, "a")
+                d_inp.send_keys(Keys.BACKSPACE)
+                driver.execute_script("""
+                    var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+                    if (setter) setter.call(arguments[0], '');
+                    else arguments[0].value = '';
+                    arguments[0].dispatchEvent(new Event('input', { bubbles: true }));
+                    arguments[0].dispatchEvent(new Event('change', { bubbles: true }));
+                """, d_inp)
+                d_inp.send_keys(Keys.TAB)
+                time.sleep(0.15)
+        except Exception:
+            continue
+
     box = None
     for _ in range(3):
         cands = [e for e in driver.find_elements(By.CSS_SELECTOR, "input.form-control.ted-input-text[maxlength='20']")
-                 if e.is_displayed()]
+                 if e.is_displayed() and e.is_enabled()]
         if len(cands) > 1:
-            pref = []
-            for e in cands:
+            scored = []
+            for idx, e in enumerate(cands):
                 try:
-                    ctxt = driver.execute_script(
-                        "var p=arguments[0].closest('.form-group,.row,div');"
-                        "for(var i=0;i<3&&p&&p.parentElement;i++){if(/mawb|master/i.test(p.innerText||''))return p.innerText;p=p.parentElement;}"
-                        "return '';", e) or ""
-                    if re.search(r"mawb|master", ctxt, re.I):
-                        pref.append(e)
+                    info = driver.execute_script("""
+                        var el = arguments[0];
+                        var prev = el.previousElementSibling;
+                        if (prev && /mawb|master/i.test(prev.innerText || '')) {
+                            return [0, (prev.innerText || '').trim().length];
+                        }
+                        var p = el.parentElement;
+                        for (var d = 1; d <= 4 && p; d++) {
+                            var txt = (p.innerText || '').trim();
+                            if (/mawb|master/i.test(txt)) {
+                                return [d, txt.length];
+                            }
+                            p = p.parentElement;
+                        }
+                        return [99, 99999];
+                    """, e)
+                    depth, tlen = info[0], info[1]
+                    if depth < 99:
+                        scored.append((depth, tlen, idx, e))
                 except Exception:
                     pass
-            cands = pref or cands
-        if cands:
+            if scored:
+                scored.sort(key=lambda x: (x[0], x[1], x[2]))
+                box = scored[0][3]
+        elif cands:
             box = cands[0]
+        if box is None and cands:
+            box = cands[0]
+        if box is not None:
             break
         time.sleep(1)
     if box is None:
         raise RuntimeError("MAWB input not found on Breakbulk page")
-    driver.execute_script("""
-        arguments[0].focus();
-        arguments[0].value = arguments[1];
-        arguments[0].dispatchEvent(new Event('input', { bubbles: true }));
-        arguments[0].dispatchEvent(new Event('change', { bubbles: true }));
-    """, box, mawb_no)
+
+    try:
+        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", box)
+    except Exception:
+        pass
+    try:
+        box.click()
+    except Exception:
+        driver.execute_script("arguments[0].click();", box)
+    time.sleep(0.2)
+    box.send_keys(Keys.CONTROL, "a")
+    box.send_keys(Keys.BACKSPACE)
+    time.sleep(0.1)
+    if (box.get_attribute("value") or "").strip():
+        driver.execute_script("""
+            var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+            if (setter) setter.call(arguments[0], '');
+            else arguments[0].value = '';
+            arguments[0].dispatchEvent(new Event('input', { bubbles: true }));
+            arguments[0].dispatchEvent(new Event('change', { bubbles: true }));
+        """, box)
+        time.sleep(0.1)
+    for char in mawb_no:
+        box.send_keys(char)
+        time.sleep(0.05)
+    box.send_keys(Keys.TAB)
     time.sleep(0.3)
-    search_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button.kwe-btn-primary")))
+
+    search_btn = None
+    for xp in [
+        "//button[contains(@class, 'kwe-btn-primary') and contains(translate(normalize-space(.), 'search', 'SEARCH'), 'SEARCH')]",
+        "//button[contains(@class, 'kwe-btn-primary') and contains(translate(@value, 'search', 'SEARCH'), 'SEARCH')]",
+    ]:
+        btns = [b for b in driver.find_elements(By.XPATH, xp) if b.is_displayed() and b.is_enabled()]
+        if btns:
+            search_btn = btns[0]
+            break
+    if search_btn is None:
+        search_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button.kwe-btn-primary")))
     driver.execute_script("arguments[0].click();", search_btn)
     time.sleep(2.5)
     try:
