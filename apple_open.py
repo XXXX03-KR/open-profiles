@@ -233,6 +233,7 @@ def _open_find_matching_excel_sheet(excel_path, pup_month, pup_day, log_fn=None)
     target = (int(pup_month), int(pup_day))
     pattern = re.compile(r"(\d{1,2})\.(\d{1,2})\s*~\s*(\d{1,2})\.(\d{1,2})")
 
+    matches = []
     for name in reversed(sheet_names):
         m = pattern.search(name.strip())
         if m:
@@ -241,18 +242,20 @@ def _open_find_matching_excel_sheet(excel_path, pup_month, pup_day, log_fn=None)
             end_t = (em, ed)
             if start_t <= end_t:
                 if start_t <= target <= end_t:
-                    return name
+                    matches.append(name)
             else:
                 if target >= start_t or target <= end_t:
-                    return name
-    return None
+                    matches.append(name)
+    if len(matches) > 1 and log_fn:
+        log_fn(f"[WARN] Multiple Excel sheets match PUP {int(pup_month):02d}-{int(pup_day):02d}: {matches} -> using '{matches[0]}'")
+    return matches[0] if matches else None
 
 
 def _open_calculate_excel_rates(excel_path, sheet_name, chargeable_wt, origin="PVG", log_fn=None):
     import openpyxl
     import gc
     from decimal import Decimal, ROUND_HALF_UP, ROUND_UP, ROUND_DOWN, ROUND_CEILING, ROUND_FLOOR
-    from openpyxl.utils import column_index_from_string
+    from openpyxl.utils import column_index_from_string, get_column_letter
 
     abs_path = os.path.abspath(excel_path)
     if not os.path.exists(abs_path):
@@ -271,16 +274,35 @@ def _open_calculate_excel_rates(excel_path, sheet_name, chargeable_wt, origin="P
     row = 16 if origin_upper == "HAN" else 24
     input_cell = f"B{row}"
 
-    def _to_float(v):
-        if v is None:
+    bad = {}    # cell -> reason (empty / Excel error / non-numeric). Never silently treated as a real 0.
+    stale = {}  # fallback evaluator only: cells that could not be calculated
+
+    def _to_float(v, cell=""):
+        reason = None
+        out = 0.0
+        if v is None or (isinstance(v, str) and not v.strip()):
+            reason = "empty"
+        elif isinstance(v, bool):
+            out = float(v)
+        elif isinstance(v, int) and -2146826288 <= v <= -2146826246:
+            reason = f"Excel error code {v}"
+        elif isinstance(v, (int, float)):
+            out = float(v)
+        else:
+            s = str(v).strip()
+            if s.startswith("#"):
+                reason = f"Excel error {s}"
+            else:
+                try:
+                    out = float(re.sub(r"[,$\s]", "", s))
+                except Exception:
+                    reason = f"non-numeric {s!r}"
+        if reason:
+            bad[cell or "?"] = reason
+            if log_fn:
+                log_fn(f"[WARN] Excel cell {cell} read as 0 ({reason}); raw={v!r}")
             return 0.0
-        if isinstance(v, (int, float)) and not isinstance(v, bool):
-            return float(v)
-        s = str(v).strip()
-        if not s or s.startswith("#"):
-            return 0.0
-        s = re.sub(r"[,$\s]", "", s)
-        return float(s) if s else 0.0
+        return out
 
     excel = None
     wb = None
@@ -323,7 +345,7 @@ def _open_calculate_excel_rates(excel_path, sheet_name, chargeable_wt, origin="P
         except Exception:
             pass
 
-        target_ws.Range(input_cell).MergeArea.Cells(1, 1).Value = wt_val
+        target_ws.Range(input_cell).MergeArea.Cells(1, 1).Value2 = wt_val
         try:
             target_ws.Calculate()
         except Exception:
@@ -340,25 +362,33 @@ def _open_calculate_excel_rates(excel_path, sheet_name, chargeable_wt, origin="P
         except Exception:
             pass
 
-        d_val = _to_float(target_ws.Range(f"D{row}").Value)
-        e_val = _to_float(target_ws.Range(f"E{row}").Value)
-        f_val = _to_float(target_ws.Range(f"F{row}").Value)
-        h_val = _to_float(target_ws.Range(f"H{row}").Value)
+        try:
+            _echo = target_ws.Range(input_cell).MergeArea.Cells(1, 1).Value2
+            if _echo is None or abs(float(_echo) - wt_val) > 1e-9:
+                if log_fn:
+                    log_fn(f"[WARN] Excel {input_cell} read-back mismatch (set {wt_val}, got {_echo})")
+        except Exception:
+            pass
+
+        d_val = _to_float(target_ws.Range(f"D{row}").Value2, f"D{row}")
+        e_val = _to_float(target_ws.Range(f"E{row}").Value2, f"E{row}")
+        f_val = _to_float(target_ws.Range(f"F{row}").Value2, f"F{row}")
+        h_val = _to_float(target_ws.Range(f"H{row}").Value2, f"H{row}")
 
         if origin_upper == "HAN":
-            fcf_as_val = _to_float(target_ws.Range(f"I{row}").Value)
-            fcf_ad_val = _to_float(target_ws.Range(f"J{row}").Value)
+            fcf_as_val = _to_float(target_ws.Range(f"I{row}").Value2, f"I{row}")
+            fcf_ad_val = _to_float(target_ws.Range(f"J{row}").Value2, f"J{row}")
             mag1_val, mag2_val = 0.0, 0.0
             fcf_as_cell, fcf_ad_cell = f"I{row}", f"J{row}"
         else:
-            mag1_val = _to_float(target_ws.Range(f"I{row}").Value)
-            mag2_val = _to_float(target_ws.Range(f"J{row}").Value)
-            fcf_as_val = _to_float(target_ws.Range(f"K{row}").Value)
-            fcf_ad_val = _to_float(target_ws.Range(f"L{row}").Value)
+            mag1_val = _to_float(target_ws.Range(f"I{row}").Value2, f"I{row}")
+            mag2_val = _to_float(target_ws.Range(f"J{row}").Value2, f"J{row}")
+            fcf_as_val = _to_float(target_ws.Range(f"K{row}").Value2, f"K{row}")
+            fcf_ad_val = _to_float(target_ws.Range(f"L{row}").Value2, f"L{row}")
             fcf_as_cell, fcf_ad_cell = f"K{row}", f"L{row}"
 
         return {
-            "origin": origin_upper, "row": row,
+            "SOURCE": "COM", "BAD": bad, "STALE": {}, "origin": origin_upper, "row": row,
             "FRT_AS": d_val, "FRT_AD": e_val, "FSC": f_val, "HAN": h_val,
             "MAG1": mag1_val, "MAG2": mag2_val, "FCF_AS": fcf_as_val, "FCF_AD": fcf_ad_val,
             "FRT_AS_CELL": f"D{row}", "FRT_AD_CELL": f"E{row}",
@@ -784,7 +814,10 @@ def _open_calculate_excel_rates(excel_path, sheet_name, chargeable_wt, origin="P
                             if peek()[0] == ",":
                                 consume()
                                 _skip_arg()
-                        except Exception:
+                        except Exception as _ie:
+                            _m = str(_ie)
+                            if "Unsupported" in _m or "Unexpected" in _m or "Invalid cell ref" in _m:
+                                raise
                             _skip_arg()
                             if peek()[0] == ",":
                                 consume()
@@ -998,8 +1031,9 @@ def _open_calculate_excel_rates(excel_path, sheet_name, chargeable_wt, origin="P
                 visiting.add(key)
                 try:
                     val = _eval_formula(raw, s_name, visiting)
-                except Exception:
-                    val = wb_cached[s_name].cell(row=r_idx, column=c_idx).value if wb_cached and s_name in wb_cached.sheetnames else 0.0
+                except Exception as _fe:
+                    val = wb_cached[s_name].cell(row=r_idx, column=c_idx).value if wb_cached and s_name in wb_cached.sheetnames else None
+                    stale[f"{s_name}!{get_column_letter(c_idx)}{r_idx}"] = f"{type(_fe).__name__}: {_fe} (old cached value {val!r} is NOT recalculated)"
                 finally:
                     visiting.discard(key)
                 memo[key] = val
@@ -1007,25 +1041,25 @@ def _open_calculate_excel_rates(excel_path, sheet_name, chargeable_wt, origin="P
             memo[key] = raw
             return raw
 
-        d_val = _to_float(_get_cell_value(sheet_name, row, 4))
-        e_val = _to_float(_get_cell_value(sheet_name, row, 5))
-        f_val = _to_float(_get_cell_value(sheet_name, row, 6))
-        h_val = _to_float(_get_cell_value(sheet_name, row, 8))
+        d_val = _to_float(_get_cell_value(sheet_name, row, 4), f"{get_column_letter(4)}{row}")
+        e_val = _to_float(_get_cell_value(sheet_name, row, 5), f"{get_column_letter(5)}{row}")
+        f_val = _to_float(_get_cell_value(sheet_name, row, 6), f"{get_column_letter(6)}{row}")
+        h_val = _to_float(_get_cell_value(sheet_name, row, 8), f"{get_column_letter(8)}{row}")
 
         if origin_upper == "HAN":
-            fcf_as_val = _to_float(_get_cell_value(sheet_name, row, 9))
-            fcf_ad_val = _to_float(_get_cell_value(sheet_name, row, 10))
+            fcf_as_val = _to_float(_get_cell_value(sheet_name, row, 9), f"{get_column_letter(9)}{row}")
+            fcf_ad_val = _to_float(_get_cell_value(sheet_name, row, 10), f"{get_column_letter(10)}{row}")
             mag1_val, mag2_val = 0.0, 0.0
             fcf_as_cell, fcf_ad_cell = f"I{row}", f"J{row}"
         else:
-            mag1_val = _to_float(_get_cell_value(sheet_name, row, 9))
-            mag2_val = _to_float(_get_cell_value(sheet_name, row, 10))
-            fcf_as_val = _to_float(_get_cell_value(sheet_name, row, 11))
-            fcf_ad_val = _to_float(_get_cell_value(sheet_name, row, 12))
+            mag1_val = _to_float(_get_cell_value(sheet_name, row, 9), f"{get_column_letter(9)}{row}")
+            mag2_val = _to_float(_get_cell_value(sheet_name, row, 10), f"{get_column_letter(10)}{row}")
+            fcf_as_val = _to_float(_get_cell_value(sheet_name, row, 11), f"{get_column_letter(11)}{row}")
+            fcf_ad_val = _to_float(_get_cell_value(sheet_name, row, 12), f"{get_column_letter(12)}{row}")
             fcf_as_cell, fcf_ad_cell = f"K{row}", f"L{row}"
 
         return {
-            "origin": origin_upper, "row": row,
+            "SOURCE": "openpyxl", "BAD": bad, "STALE": stale, "origin": origin_upper, "row": row,
             "FRT_AS": d_val, "FRT_AD": e_val, "FSC": f_val, "HAN": h_val,
             "MAG1": mag1_val, "MAG2": mag2_val, "FCF_AS": fcf_as_val, "FCF_AD": fcf_ad_val,
             "FRT_AS_CELL": f"D{row}", "FRT_AD_CELL": f"E{row}",
@@ -2149,6 +2183,32 @@ def _run_apple_open_profile(ctx: _OpenContext):
                     target_fsc_cell = excel_calc["FSC_CELL"]
                     expected_handrv = excel_calc["HAN"]
                     target_han_cell = excel_calc["HAN_CELL"]
+                    fcf_cell_used = excel_calc["FCF_AS_CELL"] if service_code == "AS" else excel_calc["FCF_AD_CELL"]
+                    fcf_val_used = excel_calc["FCF_AS"] if service_code == "AS" else excel_calc["FCF_AD"]
+                    ctx.log(f"[INFO] Excel [{excel_calc.get('SOURCE')}] sheet='{matched_sheet}' wt={chargeable_wt} svc={service_code} | "
+                            f"{target_frt_cell}={expected_frtrv} {target_fsc_cell}={expected_fscrv} {target_han_cell}={expected_handrv} {fcf_cell_used}={fcf_val_used}")
+                    bad_used = {c: r for c, r in excel_calc.get("BAD", {}).items()
+                                if c in (target_frt_cell, target_fsc_cell, target_han_cell, fcf_cell_used)}
+                    _unused = {excel_calc["FRT_AD_CELL"] if service_code == "AS" else excel_calc["FRT_AS_CELL"],
+                               excel_calc["FCF_AD_CELL"] if service_code == "AS" else excel_calc["FCF_AS_CELL"]}
+                    if not (is_pvg and has_magnerv_initial):
+                        _unused |= {f"I{excel_calc['row']}", f"J{excel_calc['row']}"}
+                    stale_used = {k: v for k, v in excel_calc.get("STALE", {}).items() if k.rsplit("!", 1)[-1] not in _unused}
+                    if bad_used or stale_used:
+                        parts = [f"{c}: {r}" for c, r in bad_used.items()] + [f"{c}: {r}" for c, r in stale_used.items()]
+                        err_msg = f"Excel value could not be read/calculated (sheet '{matched_sheet}'): " + " | ".join(parts)
+                        ctx.add_irr({
+                            "pup_date": pup_date_text, "origin": current_origin, "mawb": target_mawb_no,
+                            "hawb": target_hawb_no, "desc": err_msg, "corr": "",
+                            "open_date": datetime.now().strftime("%m-%d %H:%M")
+                        })
+                        try:
+                            driver.close()
+                            driver.switch_to.window(mawb_window)
+                        except Exception:
+                            pass
+                        time.sleep(2)
+                        continue
 
                     initial_charges_map = {c["code"]: c for c in initial_charges}
                     pre_mismatches = []
