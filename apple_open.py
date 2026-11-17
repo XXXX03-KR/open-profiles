@@ -437,67 +437,42 @@ def _open_parse_hawb_charges_grid(driver):
     return parsed_charges
 
 
-def _run_apple_open_profile(ctx: _OpenContext):
-    """Run the APPLE open logic on top of the host OpenContext."""
-    driver = ctx.driver
-    wait = ctx.wait
-    only_mode = bool(getattr(ctx, "only_mawbs", None))
-
-    ctx.status("Entering Breakbulk page...")
-    ctx.open_breakbulk()
-    if ctx.stop_requested():
-        return
-
-    ctx.status("Searching Breakbulk ETA range...")
-    ctx.log(("[INFO] Breakbulk search (Target MAWB mode: no ETA | IC)" if only_mode else f"[INFO] Breakbulk search (ETA: {ctx.start_date} ~ {ctx.end_date} | IC)"))
-
-    date_inputs = wait.until(
-        EC.presence_of_all_elements_located((By.CSS_SELECTOR, "input.k-textbox[placeholder='dd/MM/yyyy']"))
-    )
-
-    date_inputs[0].click()
-    time.sleep(0.2)
+def _open_breakbulk_search_mawb(ctx, mawb_no):
+    """Target MAWB: type the MAWB into the Breakbulk MAWB input (no ETA / IC) and press SEARCH."""
+    driver, wait = ctx.driver, ctx.wait
+    box = None
+    for _ in range(3):
+        cands = [e for e in driver.find_elements(By.CSS_SELECTOR, "input.form-control.ted-input-text[maxlength='20']")
+                 if e.is_displayed()]
+        if len(cands) > 1:
+            pref = []
+            for e in cands:
+                try:
+                    ctxt = driver.execute_script(
+                        "var p=arguments[0].closest('.form-group,.row,div');"
+                        "for(var i=0;i<3&&p&&p.parentElement;i++){if(/mawb|master/i.test(p.innerText||''))return p.innerText;p=p.parentElement;}"
+                        "return '';", e) or ""
+                    if re.search(r"mawb|master", ctxt, re.I):
+                        pref.append(e)
+                except Exception:
+                    pass
+            cands = pref or cands
+        if cands:
+            box = cands[0]
+            break
+        time.sleep(1)
+    if box is None:
+        raise RuntimeError("MAWB input not found on Breakbulk page")
     driver.execute_script("""
-        arguments[0].value = '';
+        arguments[0].focus();
+        arguments[0].value = arguments[1];
         arguments[0].dispatchEvent(new Event('input', { bubbles: true }));
         arguments[0].dispatchEvent(new Event('change', { bubbles: true }));
-    """, date_inputs[0])
-    time.sleep(0.2)
-    for char in ("" if only_mode else ctx.start_date):
-        date_inputs[0].send_keys(char)
-        time.sleep(0.05)
-    date_inputs[0].send_keys(Keys.TAB)
+    """, box, mawb_no)
     time.sleep(0.3)
-
-    date_inputs[1].click()
-    time.sleep(0.2)
-    driver.execute_script("""
-        arguments[0].value = '';
-        arguments[0].dispatchEvent(new Event('input', { bubbles: true }));
-        arguments[0].dispatchEvent(new Event('change', { bubbles: true }));
-    """, date_inputs[1])
-    time.sleep(0.2)
-    for char in ("" if only_mode else ctx.end_date):
-        date_inputs[1].send_keys(char)
-        time.sleep(0.05)
-    date_inputs[1].send_keys(Keys.TAB)
-    time.sleep(0.3)
-
-    dropdown_wrap = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "span.k-dropdown-wrap")))
-    driver.execute_script("arguments[0].click();", dropdown_wrap)
-    time.sleep(0.4)
-    active_el = driver.switch_to.active_element
-    for char in "IC":
-        active_el.send_keys(char)
-        time.sleep(0.05)
-    active_el.send_keys(Keys.TAB)
-    time.sleep(0.4)
-
     search_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button.kwe-btn-primary")))
     driver.execute_script("arguments[0].click();", search_btn)
-    ctx.log("[INFO] Breakbulk search executed")
-
-    time.sleep(3)
+    time.sleep(2.5)
     try:
         WebDriverWait(driver, 15).until_not(
             EC.presence_of_element_located((By.CSS_SELECTOR, ".k-loading-mask, .k-loading-image"))
@@ -511,6 +486,83 @@ def _run_apple_open_profile(ctx: _OpenContext):
         ))
     except Exception:
         pass
+
+
+def _run_apple_open_profile(ctx: _OpenContext):
+    """Run the APPLE open logic on top of the host OpenContext."""
+    driver = ctx.driver
+    wait = ctx.wait
+    only_mode = bool(getattr(ctx, "only_mawbs", None))
+
+    ctx.status("Entering Breakbulk page...")
+    ctx.open_breakbulk()
+    if ctx.stop_requested():
+        return
+
+    ctx.status("Searching Breakbulk ETA range...")
+    ctx.log(("[INFO] Breakbulk search (Target MAWB mode)" if only_mode else f"[INFO] Breakbulk search (ETA: {ctx.start_date} ~ {ctx.end_date} | IC)"))
+
+    if not only_mode:
+        date_inputs = wait.until(
+            EC.presence_of_all_elements_located((By.CSS_SELECTOR, "input.k-textbox[placeholder='dd/MM/yyyy']"))
+        )
+
+        date_inputs[0].click()
+        time.sleep(0.2)
+        driver.execute_script("""
+            arguments[0].value = '';
+            arguments[0].dispatchEvent(new Event('input', { bubbles: true }));
+            arguments[0].dispatchEvent(new Event('change', { bubbles: true }));
+        """, date_inputs[0])
+        time.sleep(0.2)
+        for char in ("" if only_mode else ctx.start_date):
+            date_inputs[0].send_keys(char)
+            time.sleep(0.05)
+        date_inputs[0].send_keys(Keys.TAB)
+        time.sleep(0.3)
+
+        date_inputs[1].click()
+        time.sleep(0.2)
+        driver.execute_script("""
+            arguments[0].value = '';
+            arguments[0].dispatchEvent(new Event('input', { bubbles: true }));
+            arguments[0].dispatchEvent(new Event('change', { bubbles: true }));
+        """, date_inputs[1])
+        time.sleep(0.2)
+        for char in ("" if only_mode else ctx.end_date):
+            date_inputs[1].send_keys(char)
+            time.sleep(0.05)
+        date_inputs[1].send_keys(Keys.TAB)
+        time.sleep(0.3)
+
+        dropdown_wrap = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "span.k-dropdown-wrap")))
+        driver.execute_script("arguments[0].click();", dropdown_wrap)
+        time.sleep(0.4)
+        active_el = driver.switch_to.active_element
+        for char in "IC":
+            active_el.send_keys(char)
+            time.sleep(0.05)
+        active_el.send_keys(Keys.TAB)
+        time.sleep(0.4)
+
+        search_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button.kwe-btn-primary")))
+        driver.execute_script("arguments[0].click();", search_btn)
+        ctx.log("[INFO] Breakbulk search executed")
+
+        time.sleep(3)
+        try:
+            WebDriverWait(driver, 15).until_not(
+                EC.presence_of_element_located((By.CSS_SELECTOR, ".k-loading-mask, .k-loading-image"))
+            )
+        except Exception:
+            pass
+        try:
+            wait.until(EC.any_of(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "tr.k-master-row")),
+                EC.presence_of_element_located((By.CSS_SELECTOR, "tr.k-grid-norecords, div.k-grid-norecords"))
+            ))
+        except Exception:
+            pass
 
     rows = driver.find_elements(By.CSS_SELECTOR, "tr.k-master-row")
     target_origin_mawbs = []
@@ -547,11 +599,31 @@ def _run_apple_open_profile(ctx: _OpenContext):
             continue
 
     if only_mode:
-        # Target MAWB: ignore Arr/Doc check state; targets not on the grid are still verified via search
-        _known = {m.replace("-", "").replace(" ", "").upper() for m in target_origin_mawbs}
+        # Target MAWB: search each MAWB directly (no ETA / IC), read its origin from the grid
         for _t in ctx.only_mawbs:
-            if _t.replace("-", "").replace(" ", "").upper() not in _known:
+            if ctx.stop_requested():
+                return
+            try:
+                _open_breakbulk_search_mawb(ctx, _t)
+            except Exception as _e:
+                ctx.log(f"[ERROR] {_t}: Breakbulk search failed ({_e})")
+                continue
+            _org = ""
+            for _r in driver.find_elements(By.CSS_SELECTOR, "tr.k-master-row"):
+                try:
+                    _m = _r.find_element(By.CSS_SELECTOR, "td:nth-child(6) span.case-cell").text.strip()
+                    if ctx.is_target(_m) and _m.replace("-", "").upper() == _t.replace("-", "").upper():
+                        _org = _r.find_element(By.CSS_SELECTOR, "td:nth-child(15)").text.strip().upper()
+                        break
+                except Exception:
+                    continue
+            if _org and _org not in ("PVG", "HAN"):
+                ctx.log(f"[WARN] {_t}: origin {_org} not supported - skipped")
+                continue
+            if _t not in target_origin_mawbs:
                 target_origin_mawbs.append(_t)
+            if _org:
+                mawb_origin_map[_t] = _org
     ctx.log(f"[INFO] Candidates (PVG/HAN): {len(target_origin_mawbs)}")
 
     final_apple_mawbs = []
@@ -619,6 +691,8 @@ def _run_apple_open_profile(ctx: _OpenContext):
         try:
             driver.switch_to.window(breakbulk_window)
             time.sleep(1)
+            if only_mode:
+                _open_breakbulk_search_mawb(ctx, target_mawb_no)
 
             if not target_mawb_origin:
                 for r in driver.find_elements(By.CSS_SELECTOR, "tr.k-master-row"):
