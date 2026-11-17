@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
-"""APPLE 업체 오픈 프로필 (UFS+ TOOL OPEN 메뉴용).
-규격: PROFILE_NAME + run(ctx)
+"""APPLE vendor open profile (UFS+ TOOL OPEN menu).
+Contract: PROFILE_NAME + run(ctx). Supports Target MAWB (ctx.only_mawbs / ctx.is_target).
 """
 import os
 import re
@@ -16,7 +16,7 @@ from selenium.webdriver.support import expected_conditions as EC
 PROFILE_NAME = "APPLE"
 PROFILE_ID = "apple"
 
-_OpenContext = object  # 타입 힌트용 (본체가 실제 ctx 객체를 전달)
+_OpenContext = object  # type hint only (the host passes the real ctx)
 
 
 def _open_extract_service_type_from_text(raw_text):
@@ -32,33 +32,33 @@ def _open_extract_service_type_from_text(raw_text):
     if m_after:
         rest = m_after.group(1)
         if any(k in rest for k in ["AIR", "AP", "AS"]):
-            return "AS 건", "AS"
+            return "AS", "AS"
         elif "AD" in rest:
-            return "AD 건", "AD"
+            return "AD", "AD"
 
     m_pre = re.search(r'(.*?)(?:SERVICE|SERIVCE|SRVICE|SERVC|SVC|SRV)', clean)
     if m_pre:
         pre = m_pre.group(1)
         if any(k in pre for k in ["AIR", "AP", "AS"]):
-            return "AS 건", "AS"
+            return "AS", "AS"
         elif "AD" in pre:
-            return "AD 건", "AD"
+            return "AD", "AD"
 
     upper_raw = raw_str.upper()
     if any(w in upper_raw for w in ["SERVICE", "SERIVCE", "SVC"]):
         if any(k in upper_raw for k in ["AIR", "AP", "AS"]):
             if "AD" in upper_raw and not any(k in upper_raw for k in ["AIR", "AP", "AS"]):
-                return "AD 건", "AD"
-            return "AS 건", "AS"
+                return "AD", "AD"
+            return "AS", "AS"
         elif "AD" in upper_raw:
-            return "AD 건", "AD"
+            return "AD", "AD"
 
     return None, None
 
 
 def _open_check_pup_date_from_ui(driver, hawb_no="", log_fn=None):
     if log_fn:
-        log_fn(f"[PUP DATE 검증] HAWB ({hawb_no}) Milestone 'PUP' 탐색 중...")
+        log_fn(f"[INFO] HAWB {hawb_no}: checking PUP milestone")
     unique_parsed_dates = {}
     found_pup_date_strings = []
 
@@ -101,12 +101,12 @@ def _open_check_pup_date_from_ui(driver, hawb_no="", log_fn=None):
                             if len(d_m_y) == 3:
                                 p_day = int(d_m_y[0])
                                 p_month = int(d_m_y[1])
-                                unique_parsed_dates[(p_month, p_day)] = f"{p_month}월 {p_day}일"
+                                unique_parsed_dates[(p_month, p_day)] = f"{p_month:02d}-{p_day:02d}"
             except Exception:
                 continue
     except Exception as e:
         if log_fn:
-            log_fn(f"[오류] Milestone 탐색 중 예외: {e}")
+            log_fn(f"[ERROR] Milestone lookup failed: {e}")
 
     recognized_date_str = ""
     parsed_month = None
@@ -116,16 +116,16 @@ def _open_check_pup_date_from_ui(driver, hawb_no="", log_fn=None):
     if len(unique_parsed_dates) == 0:
         status = "omitted"
         if log_fn:
-            log_fn(" ※ [PUP DATE 인식 실패] PUP DATE omitted")
+            log_fn("[WARN] PUP DATE omitted")
     elif len(unique_parsed_dates) > 1:
         status = "conflicting"
         recognized_date_str = ", ".join(list(unique_parsed_dates.values()))
         if log_fn:
-            log_fn(f" ※ [PUP DATE 인식 실패] Conflicting PUP DATE ({recognized_date_str})")
+            log_fn(f"[WARN] Conflicting PUP DATE ({recognized_date_str})")
     else:
         (parsed_month, parsed_day), recognized_date_str = list(unique_parsed_dates.items())[0]
         if log_fn:
-            log_fn(f" [PUP DATE 인식 성공] {recognized_date_str}")
+            log_fn(f"[INFO] PUP DATE {recognized_date_str}")
 
     return recognized_date_str, parsed_month, parsed_day, status
 
@@ -193,7 +193,7 @@ def _open_find_matching_excel_sheet(excel_path, pup_month, pup_day, log_fn=None)
     import gc
     if not os.path.exists(excel_path):
         if log_fn:
-            log_fn(f"[오류] 엑셀 파일을 찾을 수 없습니다: {excel_path}")
+            log_fn(f"[ERROR] Excel file not found: {excel_path}")
         return None
 
     sheet_names = []
@@ -215,7 +215,7 @@ def _open_find_matching_excel_sheet(excel_path, pup_month, pup_day, log_fn=None)
             sheet_names = [s.Name for s in wb.Worksheets]
         except Exception as e:
             if log_fn:
-                log_fn(f"[오류] 엑셀 시트 목록을 읽는 중 오류 발생: {e}")
+                log_fn(f"[ERROR] Failed to read Excel sheet list: {e}")
             return None
         finally:
             if wb:
@@ -254,14 +254,14 @@ def _open_calculate_excel_rates(excel_path, sheet_name, chargeable_wt, origin="P
     abs_path = os.path.abspath(excel_path)
     if not os.path.exists(abs_path):
         if log_fn:
-            log_fn(f"[오류] 엑셀 파일이 존재하지 않습니다: {abs_path}")
+            log_fn(f"[ERROR] Excel file does not exist: {abs_path}")
         return None
 
     try:
         wt_val = float(str(chargeable_wt).replace(",", "").strip())
     except Exception as e:
         if log_fn:
-            log_fn(f"[오류] Chargeable Wt 변환 실패 ({chargeable_wt}): {e}")
+            log_fn(f"[ERROR] Chargeable Wt conversion failed ({chargeable_wt}): {e}")
         return None
 
     origin_upper = str(origin).upper().strip()
@@ -290,7 +290,7 @@ def _open_calculate_excel_rates(excel_path, sheet_name, chargeable_wt, origin="P
                 break
         if not target_ws:
             if log_fn:
-                log_fn(f"[오류] 엑셀에 '{sheet_name}' 시트가 없습니다.")
+                log_fn(f"[ERROR] Sheet '{sheet_name}' not found in Excel")
             return None
 
         target_ws.Range(input_cell).Value = wt_val
@@ -380,7 +380,7 @@ def _open_calculate_excel_rates(excel_path, sheet_name, chargeable_wt, origin="P
         }
     except Exception as pyxl_err:
         if log_fn:
-            log_fn(f"[오류] 엑셀 파싱 실패: {pyxl_err}")
+            log_fn(f"[ERROR] Excel parsing failed: {pyxl_err}")
         return None
 
 
@@ -438,9 +438,10 @@ def _open_parse_hawb_charges_grid(driver):
 
 
 def _run_apple_open_profile(ctx: _OpenContext):
-    """apple_open.py 단독 로직을 OpenContext 위에서 실행한다."""
+    """Run the APPLE open logic on top of the host OpenContext."""
     driver = ctx.driver
     wait = ctx.wait
+    only_mode = bool(getattr(ctx, "only_mawbs", None))
 
     ctx.status("Entering Breakbulk page...")
     ctx.open_breakbulk()
@@ -448,7 +449,7 @@ def _run_apple_open_profile(ctx: _OpenContext):
         return
 
     ctx.status("Searching Breakbulk ETA range...")
-    ctx.log(f"[정보] Breakbulk 검색 조건 설정 (ETA: {ctx.start_date} ~ {ctx.end_date} | IC)")
+    ctx.log(("[INFO] Breakbulk search (Target MAWB mode: no ETA | IC)" if only_mode else f"[INFO] Breakbulk search (ETA: {ctx.start_date} ~ {ctx.end_date} | IC)"))
 
     date_inputs = wait.until(
         EC.presence_of_all_elements_located((By.CSS_SELECTOR, "input.k-textbox[placeholder='dd/MM/yyyy']"))
@@ -462,7 +463,7 @@ def _run_apple_open_profile(ctx: _OpenContext):
         arguments[0].dispatchEvent(new Event('change', { bubbles: true }));
     """, date_inputs[0])
     time.sleep(0.2)
-    for char in ctx.start_date:
+    for char in ("" if only_mode else ctx.start_date):
         date_inputs[0].send_keys(char)
         time.sleep(0.05)
     date_inputs[0].send_keys(Keys.TAB)
@@ -476,7 +477,7 @@ def _run_apple_open_profile(ctx: _OpenContext):
         arguments[0].dispatchEvent(new Event('change', { bubbles: true }));
     """, date_inputs[1])
     time.sleep(0.2)
-    for char in ctx.end_date:
+    for char in ("" if only_mode else ctx.end_date):
         date_inputs[1].send_keys(char)
         time.sleep(0.05)
     date_inputs[1].send_keys(Keys.TAB)
@@ -494,7 +495,7 @@ def _run_apple_open_profile(ctx: _OpenContext):
 
     search_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button.kwe-btn-primary")))
     driver.execute_script("arguments[0].click();", search_btn)
-    ctx.log("[성공] Breakbulk 조회 실행 완료")
+    ctx.log("[INFO] Breakbulk search executed")
 
     time.sleep(3)
     try:
@@ -527,17 +528,31 @@ def _run_apple_open_profile(ctx: _OpenContext):
             arr_checked = driver.execute_script("return arguments[0].checked;", arr_cb)
             doc_checked = driver.execute_script("return arguments[0].checked;", doc_cb)
 
+            if only_mode:
+                _me = row.find_element(By.CSS_SELECTOR, "td:nth-child(6) span.case-cell")
+                _mn = _me.text.strip()
+                if _mn and ctx.is_target(_mn) and _mn not in target_origin_mawbs:
+                    target_origin_mawbs.append(_mn)
+                    mawb_origin_map[_mn] = origin_port
+                continue
+
             if not arr_checked and not doc_checked:
                 mawb_element = row.find_element(By.CSS_SELECTOR, "td:nth-child(6) span.case-cell")
                 mawb_no = mawb_element.text.strip()
                 if mawb_no and mawb_no not in target_origin_mawbs:
                     target_origin_mawbs.append(mawb_no)
                     mawb_origin_map[mawb_no] = origin_port
-                    ctx.log(f"조건 만족 MAWB ({origin_port}): {mawb_no}")
+                    ctx.log(f"[INFO] Candidate MAWB ({origin_port}): {mawb_no}")
         except Exception:
             continue
 
-    ctx.log(f"[1차 필터링 완료] PVG/HAN 미체크 MAWB: {len(target_origin_mawbs)}건")
+    if only_mode:
+        # Target MAWB: ignore Arr/Doc check state; targets not on the grid are still verified via search
+        _known = {m.replace("-", "").replace(" ", "").upper() for m in target_origin_mawbs}
+        for _t in ctx.only_mawbs:
+            if _t.replace("-", "").replace(" ", "").upper() not in _known:
+                target_origin_mawbs.append(_t)
+    ctx.log(f"[INFO] Candidates (PVG/HAN): {len(target_origin_mawbs)}")
 
     final_apple_mawbs = []
     for index, mawb_no in enumerate(target_origin_mawbs, start=1):
@@ -565,21 +580,26 @@ def _run_apple_open_profile(ctx: _OpenContext):
             if is_apple:
                 mawb_has_apple = True
                 matched_info = f"HAWB: {hwb_no} (Cnee: {cnee_name})"
-                ctx.log(f"  [APPLE 일치] {mawb_no} ({origin_for_mawb}) -> {matched_info}")
+                ctx.log(f"[INFO] APPLE match {mawb_no} ({origin_for_mawb}) -> {matched_info}")
                 break
 
         if mawb_has_apple:
             final_apple_mawbs.append((mawb_no, origin_for_mawb, matched_info))
+        elif only_mode:
+            ctx.log(f"[WARN] {mawb_no}: no APPLE HAWB - skipped")
 
     detected_mawb_list = [item[0] for item in final_apple_mawbs]
-    target_mawb_list = [m for m in detected_mawb_list if m not in ctx.exclude_mawbs]
-    for m in ctx.add_mawbs:
-        if m not in target_mawb_list:
-            target_mawb_list.append(m)
+    if only_mode:
+        target_mawb_list = list(detected_mawb_list)
+    else:
+        target_mawb_list = [m for m in detected_mawb_list if m not in ctx.exclude_mawbs]
+        for m in ctx.add_mawbs:
+            if m not in target_mawb_list:
+                target_mawb_list.append(m)
 
-    ctx.log(f"[최종 작업 대상 확정] 총 {len(target_mawb_list)}건: {target_mawb_list}")
+    ctx.log(f"[INFO] Final targets: {len(target_mawb_list)}")
     if not target_mawb_list:
-        ctx.log("[안내] 최종 작업 진행 대상 MAWB가 없습니다.")
+        ctx.log("[INFO] No MAWB to process")
         return
 
     breakbulk_window = driver.current_window_handle
@@ -589,8 +609,9 @@ def _run_apple_open_profile(ctx: _OpenContext):
         if ctx.stop_requested():
             break
 
+        ctx.active_context["mawb"] = target_mawb_no
         ctx.progress(m_idx - 1, total_mawbs, f"Processing MAWB ({m_idx}/{total_mawbs}): {target_mawb_no}")
-        ctx.log(f"\n[{m_idx}/{total_mawbs}] 타겟 MAWB 작업 시작: {target_mawb_no}")
+        ctx.log(f"[INFO] [{m_idx}/{total_mawbs}] Start MAWB {target_mawb_no}")
 
         mawb_window = None
         target_mawb_origin = mawb_origin_map.get(target_mawb_no, "")
@@ -628,7 +649,7 @@ def _run_apple_open_profile(ctx: _OpenContext):
                     continue
 
             if not target_row:
-                ctx.log(f"[오류] Breakbulk 화면에서 {target_mawb_no} 행을 찾을 수 없습니다.")
+                ctx.log(f"[ERROR] {target_mawb_no}: row not found on Breakbulk page (not returned by Breakbulk search)")
                 ctx.add_irr({
                     "pup_date": "", "origin": target_mawb_origin, "mawb": target_mawb_no, "hawb": "",
                     "desc": "Breakbulk row not found", "corr": "",
@@ -642,7 +663,7 @@ def _run_apple_open_profile(ctx: _OpenContext):
             doc_checked = driver.execute_script("return arguments[0].checked;", doc_cb)
 
             if not arr_checked or not doc_checked:
-                ctx.log("[1/6] Arr / Doc 체크박스 체크 및 Save 진행")
+                ctx.log("[INFO] [1/6] Arr/Doc check and Save")
                 ctx.safe_check(arr_cb)
                 time.sleep(0.2)
                 ctx.safe_check(doc_cb)
@@ -671,7 +692,7 @@ def _run_apple_open_profile(ctx: _OpenContext):
                         if not txt:
                             txt = driver.execute_script("return arguments[0].textContent;", mel).strip()
                         if "OBDORG milestone to proceed" in txt:
-                            ctx.log(f" [경고] '{txt}' -> OK 닫기 후 Arr 해제 재시도")
+                            ctx.log(f"[WARN] '{txt}' -> closing dialog, retrying Arr uncheck")
                             ctx.click_modal_ok(mel)
                             obdorg_detected = True
                             time.sleep(1.5)
@@ -752,7 +773,7 @@ def _run_apple_open_profile(ctx: _OpenContext):
                 except Exception:
                     pass
 
-            ctx.log(f"[2/6] {target_mawb_no} 링크 Shift+클릭")
+            ctx.log(f"[INFO] [2/6] Shift+click {target_mawb_no}")
             current_rows = driver.find_elements(By.CSS_SELECTOR, "tr.k-master-row")
             mawb_link_element = None
             for r in current_rows:
@@ -786,7 +807,7 @@ def _run_apple_open_profile(ctx: _OpenContext):
                 mawb_window = [w for w in driver.window_handles if w not in existing_handles][0]
                 driver.switch_to.window(mawb_window)
 
-            ctx.log("[3/6] Actual Flight Information 확인 중...")
+            ctx.log("[INFO] [3/6] Checking Actual Flight Information")
             wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div.flight-grid")))
             time.sleep(2)
 
@@ -795,7 +816,7 @@ def _run_apple_open_profile(ctx: _OpenContext):
             has_flight_info = ctx.check_has_actual_flight_info(actual_grid)
 
             if not has_flight_info:
-                ctx.log(" ▶ Actual Flight Information 없음 -> Create Actuals from Booked 진행")
+                ctx.log("[INFO] No Actual Flight Information -> Create Actuals from Booked")
                 arrow_icon = None
                 try:
                     arrow_icon = actual_grid.find_element(By.XPATH, "./preceding::button[1]//span[contains(@class, 'k-i-arrow-s')] | ./preceding::div[1]//span[contains(@class, 'k-i-arrow-s')]")
@@ -866,7 +887,7 @@ def _run_apple_open_profile(ctx: _OpenContext):
                     time.sleep(1.5)
                     continue
 
-            ctx.log("[4/6] Charges 탭 이동")
+            ctx.log("[INFO] [4/6] Charges tab")
             charges_tab = wait.until(
                 EC.element_to_be_clickable((By.XPATH, "//div[contains(@id, 'tabStripWizard_') and .//span[contains(text(), 'Charges')]] | //span[contains(@class, 'wz-st-name') and text()='Charges']"))
             )
@@ -877,7 +898,7 @@ def _run_apple_open_profile(ctx: _OpenContext):
             except Exception:
                 pass
 
-            ctx.log("[5/6] Charges 테이블 Disposition / Import Bill To ID 검증")
+            ctx.log("[INFO] [5/6] Verifying Disposition / Import Bill To ID")
             parsed_hawb_list = []
             mawb_billto_save_error = False
             skipped_completed_count = 0
@@ -917,7 +938,7 @@ def _run_apple_open_profile(ctx: _OpenContext):
                             pass
 
                         if disp_val:
-                            ctx.log(f" ▶ HAWB {hawb_no}: Disposition('{disp_val}') 기입됨 -> PASS")
+                            ctx.log(f"[INFO] HAWB {hawb_no}: Disposition('{disp_val}') OK")
                             skipped_completed_count += 1
                             continue
 
@@ -931,7 +952,7 @@ def _run_apple_open_profile(ctx: _OpenContext):
                         billto_val = (billto_input.get_attribute("value") or driver.execute_script("return arguments[0].value;", billto_input) or "").strip()
 
                         if billto_val != "" and billto_val != "302154970":
-                            ctx.log(f" ▶ HAWB {hawb_no}: Import Bill To ID('{billto_val}') -> 302154970 수정")
+                            ctx.log(f"[INFO] HAWB {hawb_no}: Import Bill To ID('{billto_val}') -> 302154970")
                             try: billto_input.click()
                             except Exception: driver.execute_script("arguments[0].click();", billto_input)
                             time.sleep(0.2)
@@ -1003,7 +1024,7 @@ def _run_apple_open_profile(ctx: _OpenContext):
                 time.sleep(1.5)
                 continue
 
-            ctx.log(f"[6/6] 선별된 APPLE HAWB ({len(apple_hawbs)}건): {[h['hawb_no'] for h in apple_hawbs]}")
+            ctx.log(f"[INFO] [6/6] APPLE HAWBs: {len(apple_hawbs)}")
 
             for h_index, target_hawb in enumerate(apple_hawbs, start=1):
                 if ctx.stop_requested():
@@ -1021,7 +1042,7 @@ def _run_apple_open_profile(ctx: _OpenContext):
                 try:
                     driver.switch_to.window(mawb_window)
                     time.sleep(1)
-                    ctx.log(f" ▶ [{h_index}/{len(apple_hawbs)}] HAWB {target_hawb_no} ({current_origin}) 처리 중...")
+                    ctx.log(f"[INFO] [{h_index}/{len(apple_hawbs)}] HAWB {target_hawb_no} ({current_origin})")
 
                     charges_rows = driver.find_elements(By.CSS_SELECTOR, "tr.k-master-row")
                     hawb_link_element = None
@@ -1243,7 +1264,7 @@ def _run_apple_open_profile(ctx: _OpenContext):
                         time.sleep(2)
                         continue
 
-                    ctx.log(f" ▶ Service: '{matched_ref_text}' -> [{service_code}]")
+                    ctx.log(f"[INFO] Service: '{matched_ref_text}' -> [{service_code}]")
 
                     # [HAWB 작업 4] Shipment Details -> Chargeable Weight
                     shipment_details_tab = wait.until(
@@ -1367,7 +1388,7 @@ def _run_apple_open_profile(ctx: _OpenContext):
                         ctx.add_irr({"pup_date": pup_date_text, "origin": current_origin, "mawb": target_mawb_no, "hawb": target_hawb_no, "desc": err_msg, "corr": "", "open_date": datetime.now().strftime("%m-%d %H:%M")})
 
                     if pre_mismatches:
-                        ctx.log(f" [선검증 실패] {target_hawb_no}: {pre_mismatches}")
+                        ctx.log(f"[WARN] {target_hawb_no}: pre-check mismatch {pre_mismatches}")
                         try:
                             driver.close()
                             driver.switch_to.window(mawb_window)
@@ -1731,7 +1752,7 @@ def _run_apple_open_profile(ctx: _OpenContext):
                         time.sleep(2)
                         continue
 
-                    ctx.log(f" ▶ [OPEN 완료] {target_hawb_no} (Invoice 2건 확인)")
+                    ctx.log(f"[INFO] OPEN done {target_hawb_no} (2 invoices confirmed)")
                     ctx.add_open({
                         "pup_date": pup_date_text, "origin": current_origin,
                         "mawb": target_mawb_no, "hawb": target_hawb_no,
@@ -1747,7 +1768,7 @@ def _run_apple_open_profile(ctx: _OpenContext):
                 except Exception as h_ex:
                     modal_err = ctx.handle_unexpected_error_modal()
                     err_desc = modal_err if modal_err else f"Exception: {h_ex}"
-                    ctx.log(f"[오류] HAWB ({target_hawb_no}) 처리 중 예외: {err_desc}")
+                    ctx.log(f"[ERROR] HAWB {target_hawb_no}: exception {err_desc}")
                     ctx.add_irr({
                         "pup_date": ctx.active_context.get("pup_date", ""),
                         "origin": current_origin, "mawb": target_mawb_no, "hawb": target_hawb_no,
@@ -1775,7 +1796,7 @@ def _run_apple_open_profile(ctx: _OpenContext):
         except Exception as m_ex:
             modal_err = ctx.handle_unexpected_error_modal()
             err_desc = modal_err if modal_err else f"Exception: {m_ex}"
-            ctx.log(f"[오류] MAWB ({target_mawb_no}) 처리 중 예외: {err_desc}")
+            ctx.log(f"[ERROR] MAWB {target_mawb_no}: exception {err_desc}")
             already_logged = any(
                 r.get("mawb") == target_mawb_no and r.get("hawb") == ctx.active_context.get("hawb", "")
                 for r in (ctx.irr_records + ctx.open_records)
