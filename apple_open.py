@@ -251,6 +251,9 @@ def _open_find_matching_excel_sheet(excel_path, pup_month, pup_day, log_fn=None)
 def _open_calculate_excel_rates(excel_path, sheet_name, chargeable_wt, origin="PVG", log_fn=None):
     import openpyxl
     import gc
+    from decimal import Decimal, ROUND_HALF_UP, ROUND_UP, ROUND_DOWN, ROUND_CEILING, ROUND_FLOOR
+    from openpyxl.utils import column_index_from_string
+
     abs_path = os.path.abspath(excel_path)
     if not os.path.exists(abs_path):
         if log_fn:
@@ -269,20 +272,38 @@ def _open_calculate_excel_rates(excel_path, sheet_name, chargeable_wt, origin="P
     input_cell = f"B{row}"
 
     def _to_float(v):
-        return float(v) if v is not None else 0.0
+        if v is None:
+            return 0.0
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            return float(v)
+        s = str(v).strip()
+        if not s or s.startswith("#"):
+            return 0.0
+        s = re.sub(r"[,$\s]", "", s)
+        return float(s) if s else 0.0
 
     excel = None
     wb = None
+    co_init = False
     try:
         import win32com.client
         import pythoncom
-        pythoncom.CoInitialize()
+        try:
+            pythoncom.CoInitialize()
+            co_init = True
+        except Exception:
+            pass
 
         excel = win32com.client.DispatchEx("Excel.Application")
         excel.Visible = False
         excel.DisplayAlerts = False
+        try:
+            excel.AskToUpdateLinks = False
+            excel.EnableEvents = False
+        except Exception:
+            pass
 
-        wb = excel.Workbooks.Open(abs_path, UpdateLinks=0, ReadOnly=True)
+        wb = excel.Workbooks.Open(abs_path, UpdateLinks=0, ReadOnly=True, IgnoreReadOnlyRecommended=True)
         target_ws = None
         for s in wb.Worksheets:
             if s.Name == sheet_name:
@@ -293,8 +314,31 @@ def _open_calculate_excel_rates(excel_path, sheet_name, chargeable_wt, origin="P
                 log_fn(f"[ERROR] Sheet '{sheet_name}' not found in Excel")
             return None
 
-        target_ws.Range(input_cell).Value = wt_val
-        excel.Calculate()
+        try:
+            excel.Calculation = -4105  # xlCalculationAutomatic
+        except Exception:
+            pass
+        try:
+            target_ws.EnableCalculation = True
+        except Exception:
+            pass
+
+        target_ws.Range(input_cell).MergeArea.Cells(1, 1).Value = wt_val
+        try:
+            target_ws.Calculate()
+        except Exception:
+            pass
+        try:
+            excel.CalculateFull()
+        except Exception:
+            excel.Calculate()
+
+        wait_start = time.time()
+        try:
+            while getattr(excel, "CalculationState", 0) != 0 and (time.time() - wait_start) < 5.0:
+                time.sleep(0.1)
+        except Exception:
+            pass
 
         d_val = _to_float(target_ws.Range(f"D{row}").Value)
         e_val = _to_float(target_ws.Range(f"E{row}").Value)
@@ -321,53 +365,661 @@ def _open_calculate_excel_rates(excel_path, sheet_name, chargeable_wt, origin="P
             "FSC_CELL": f"F{row}", "HAN_CELL": f"H{row}",
             "FCF_AS_CELL": fcf_as_cell, "FCF_AD_CELL": fcf_ad_cell,
         }
-    except Exception:
-        pass
+    except Exception as com_err:
+        if log_fn:
+            log_fn(f"[WARN] Excel COM calculation failed, using openpyxl fallback: {com_err}")
     finally:
         if wb:
-            try: wb.Close(SaveChanges=False)
-            except Exception: pass
+            try:
+                wb.Saved = True
+            except Exception:
+                pass
+            try:
+                wb.Close(SaveChanges=False)
+            except Exception:
+                pass
             del wb
         if excel:
-            try: excel.Quit()
-            except Exception: pass
+            try:
+                excel.Quit()
+            except Exception:
+                pass
             del excel
         gc.collect()
-        try: pythoncom.CoUninitialize()
-        except Exception: pass
+        if co_init:
+            try:
+                pythoncom.CoUninitialize()
+            except Exception:
+                pass
 
+    wb = None
+    wb_cached = None
     try:
         wb = openpyxl.load_workbook(abs_path, data_only=False)
         if sheet_name not in wb.sheetnames:
+            if log_fn:
+                log_fn(f"[ERROR] Sheet '{sheet_name}' not found in Excel")
             return None
-        ws = wb[sheet_name]
+        try:
+            wb_cached = openpyxl.load_workbook(abs_path, data_only=True)
+        except Exception:
+            wb_cached = None
 
-        def _eval_cell(cell_val, weight, c_name):
-            if isinstance(cell_val, (int, float)):
-                return float(cell_val)
-            if isinstance(cell_val, str) and cell_val.startswith("="):
-                expr = cell_val[1:].replace(c_name, str(weight)).replace(c_name.lower(), str(weight))
+        overrides = {(sheet_name, row, 2): wt_val}
+        memo = {}
+        cell_re = re.compile(r"^\$?([A-Za-z]{1,3})\$?(\d+)$")
+
+        def _parse_coord(ref_str):
+            m = cell_re.match(ref_str.strip())
+            if not m:
+                raise ValueError(f"Invalid cell ref: {ref_str}")
+            return int(m.group(2)), column_index_from_string(m.group(1).upper())
+
+        def _num(v):
+            if v is None:
+                return 0.0
+            if isinstance(v, bool):
+                return 1.0 if v else 0.0
+            if isinstance(v, (int, float)):
+                return float(v)
+            s = re.sub(r"[,$\s]", "", str(v).strip())
+            return float(s) if s else 0.0
+
+        def _is_num(v):
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                return True
+            if isinstance(v, str):
                 try:
-                    return float(eval(expr, {"__builtins__": None}, {}))
+                    float(re.sub(r"[,$\s]", "", v.strip()))
+                    return True
                 except Exception:
-                    pass
-            return 0.0
+                    return False
+            return False
 
-        d_val = _eval_cell(ws[f"D{row}"].value, wt_val, input_cell)
-        e_val = _eval_cell(ws[f"E{row}"].value, wt_val, input_cell)
-        f_val = _eval_cell(ws[f"F{row}"].value, wt_val, input_cell)
-        h_val = _eval_cell(ws[f"H{row}"].value, wt_val, input_cell)
+        def _excel_round(val, digits, mode):
+            d = Decimal(str(float(val)))
+            n = int(digits)
+            if n >= 0:
+                q = Decimal("1") if n == 0 else Decimal("1e-" + str(n))
+            else:
+                q = Decimal("1e" + str(-n))
+            return float(d.quantize(q, rounding=mode))
+
+        def _excel_eq(a, b):
+            if a is None and b is None:
+                return True
+            if a is None:
+                return b == "" or (_is_num(b) and _num(b) == 0.0)
+            if b is None:
+                return a == "" or (_is_num(a) and _num(a) == 0.0)
+            if isinstance(a, bool) or isinstance(b, bool):
+                return bool(a) == bool(b)
+            if _is_num(a) and _is_num(b):
+                return abs(_num(a) - _num(b)) < 1e-9
+            return str(a).strip().lower() == str(b).strip().lower()
+
+        def _excel_cmp(a, b):
+            if _excel_eq(a, b):
+                return 0
+            if (a is None or _is_num(a)) and (b is None or _is_num(b)):
+                return -1 if _num(a) < _num(b) else 1
+            sa = "" if a is None else str(a).lower()
+            sb = "" if b is None else str(b).lower()
+            return -1 if sa < sb else 1
+
+        def _match_val(cand, key):
+            if isinstance(key, str) and ("*" in key or "?" in key):
+                pat = "^" + re.escape(key).replace(r"\*", ".*").replace(r"\?", ".") + "$"
+                return bool(re.match(pat, "" if cand is None else str(cand), re.IGNORECASE))
+            return _excel_eq(cand, key)
+
+        def _tokenize(formula):
+            tokens = []
+            i = 0
+            n = len(formula)
+            while i < n:
+                ch = formula[i]
+                if ch.isspace():
+                    i += 1
+                    continue
+                if ch == '"':
+                    j = i + 1
+                    buf = []
+                    while j < n:
+                        if formula[j] == '"':
+                            if j + 1 < n and formula[j + 1] == '"':
+                                buf.append('"')
+                                j += 2
+                            else:
+                                j += 1
+                                break
+                        else:
+                            buf.append(formula[j])
+                            j += 1
+                    tokens.append(("STR", "".join(buf)))
+                    i = j
+                    continue
+                if ch == "'":
+                    j = i + 1
+                    sbuf = []
+                    while j < n:
+                        if formula[j] == "'":
+                            if j + 1 < n and formula[j + 1] == "'":
+                                sbuf.append("'")
+                                j += 2
+                            else:
+                                j += 1
+                                break
+                        else:
+                            sbuf.append(formula[j])
+                            j += 1
+                    if j < n and formula[j] == "!":
+                        j += 1
+                        k = j
+                        while k < n and (formula[k].isalnum() or formula[k] == "$"):
+                            k += 1
+                        tokens.append(("CELL", ("".join(sbuf), formula[j:k])))
+                        i = k
+                        continue
+                    raise ValueError(f"Unexpected quoted token in {formula}")
+                if ch.isdigit() or (ch == "." and i + 1 < n and formula[i + 1].isdigit()):
+                    j = i
+                    while j < n and (formula[j].isdigit() or formula[j] == "."):
+                        j += 1
+                    if j < n and formula[j] in ("e", "E"):
+                        k = j + 1
+                        if k < n and formula[k] in ("+", "-"):
+                            k += 1
+                        if k < n and formula[k].isdigit():
+                            while k < n and formula[k].isdigit():
+                                k += 1
+                            j = k
+                    tokens.append(("NUM", float(formula[i:j])))
+                    i = j
+                    continue
+                if formula[i:i + 2] in ("<=", ">=", "<>"):
+                    tokens.append(("OP", formula[i:i + 2]))
+                    i += 2
+                    continue
+                if ch in "+-*/^&=<>%(),:":
+                    tokens.append((ch if ch in "(),:" else "OP", ch))
+                    i += 1
+                    continue
+                if ch.isalpha() or ch in ("$", "_"):
+                    j = i
+                    while j < n and (formula[j].isalnum() or formula[j] in ("$", "_", ".")):
+                        j += 1
+                    ident = formula[i:j]
+                    if j < n and formula[j] == "!":
+                        j += 1
+                        k = j
+                        while k < n and (formula[k].isalnum() or formula[k] == "$"):
+                            k += 1
+                        tokens.append(("CELL", (ident, formula[j:k])))
+                        i = k
+                        continue
+                    p = j
+                    while p < n and formula[p].isspace():
+                        p += 1
+                    if p < n and formula[p] == "(":
+                        tokens.append(("FUNC", ident.upper()))
+                        i = j
+                        continue
+                    up = ident.upper()
+                    if up == "TRUE":
+                        tokens.append(("BOOL", True))
+                    elif up == "FALSE":
+                        tokens.append(("BOOL", False))
+                    elif cell_re.match(ident):
+                        tokens.append(("CELL", (None, ident)))
+                    else:
+                        tokens.append(("IDENT", ident))
+                    i = j
+                    continue
+                raise ValueError(f"Unexpected char '{ch}' in {formula}")
+            return tokens
+
+        def _eval_formula(formula, cur_sheet, visiting):
+            tokens = _tokenize(formula[1:])
+            pos = [0]
+
+            def peek(offset=0):
+                idx = pos[0] + offset
+                return tokens[idx] if idx < len(tokens) else (None, None)
+
+            def consume():
+                tok = tokens[pos[0]]
+                pos[0] += 1
+                return tok
+
+            def parse_expr():
+                return parse_cmp()
+
+            def parse_cmp():
+                left = parse_concat()
+                while peek()[0] == "OP" and peek()[1] in ("=", "<>", "<", ">", "<=", ">="):
+                    op = consume()[1]
+                    right = parse_concat()
+                    if op == "=":
+                        left = _excel_eq(left, right)
+                    elif op == "<>":
+                        left = not _excel_eq(left, right)
+                    elif op == "<":
+                        left = _excel_cmp(left, right) < 0
+                    elif op == ">":
+                        left = _excel_cmp(left, right) > 0
+                    elif op == "<=":
+                        left = _excel_cmp(left, right) <= 0
+                    elif op == ">=":
+                        left = _excel_cmp(left, right) >= 0
+                return left
+
+            def parse_concat():
+                left = parse_add()
+                while peek()[0] == "OP" and peek()[1] == "&":
+                    consume()
+                    right = parse_add()
+                    ls = "" if left is None else str(left)
+                    rs = "" if right is None else str(right)
+                    left = ls + rs
+                return left
+
+            def parse_add():
+                left = parse_mul()
+                while peek()[0] == "OP" and peek()[1] in ("+", "-"):
+                    op = consume()[1]
+                    right = parse_mul()
+                    left = (_num(left) + _num(right)) if op == "+" else (_num(left) - _num(right))
+                return left
+
+            def parse_mul():
+                left = parse_pow()
+                while peek()[0] == "OP" and peek()[1] in ("*", "/"):
+                    op = consume()[1]
+                    right = parse_pow()
+                    if op == "*":
+                        left = _num(left) * _num(right)
+                    else:
+                        d = _num(right)
+                        if d == 0.0:
+                            raise ZeroDivisionError("#DIV/0!")
+                        left = _num(left) / d
+                return left
+
+            def parse_pow():
+                left = parse_unary()
+                while peek()[0] == "OP" and peek()[1] == "^":
+                    consume()
+                    right = parse_unary()
+                    left = _num(left) ** _num(right)
+                return left
+
+            def parse_unary():
+                if peek()[0] == "OP" and peek()[1] in ("+", "-"):
+                    op = consume()[1]
+                    val = parse_unary()
+                    return _num(val) if op == "+" else -_num(val)
+                return parse_postfix()
+
+            def parse_postfix():
+                val = parse_primary()
+                while peek()[0] == "OP" and peek()[1] == "%":
+                    consume()
+                    val = _num(val) / 100.0
+                return val
+
+            def _skip_arg():
+                depth = 0
+                while pos[0] < len(tokens):
+                    t, _ = peek()
+                    if t == "(":
+                        depth += 1
+                    elif t == ")":
+                        if depth == 0:
+                            break
+                        depth -= 1
+                    elif t == "," and depth == 0:
+                        break
+                    consume()
+
+            def _parse_range_or_expr():
+                if peek()[0] == "CELL" and peek(1)[0] == ":" and peek(2)[0] == "CELL":
+                    _, (s1, ref1) = consume()
+                    consume()
+                    _, (s2, ref2) = consume()
+                    ts = s1 or s2 or cur_sheet
+                    r1, c1 = _parse_coord(ref1)
+                    r2, c2 = _parse_coord(ref2)
+                    if r1 > r2:
+                        r1, r2 = r2, r1
+                    if c1 > c2:
+                        c1, c2 = c2, c1
+                    grid = []
+                    for rr in range(r1, r2 + 1):
+                        grid.append([_get_cell_value(ts, rr, cc, visiting) for cc in range(c1, c2 + 1)])
+                    return ("__GRID__", grid)
+                return parse_expr()
+
+            def _flatten_nums(args):
+                out = []
+                for a in args:
+                    if isinstance(a, tuple) and len(a) == 2 and a[0] == "__GRID__":
+                        for r_arr in a[1]:
+                            for v in r_arr:
+                                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                                    out.append(float(v))
+                    else:
+                        if a is not None and _is_num(a):
+                            out.append(_num(a))
+                return out
+
+            def parse_primary():
+                t, v = peek()
+                if t in ("NUM", "STR", "BOOL"):
+                    consume()
+                    return v
+                if t == "(":
+                    consume()
+                    val = parse_expr()
+                    if peek()[0] == ")":
+                        consume()
+                    return val
+                if t == "CELL":
+                    _, (s_name, ref) = consume()
+                    ts = s_name or cur_sheet
+                    rr, cc = _parse_coord(ref)
+                    return _get_cell_value(ts, rr, cc, visiting)
+                if t == "FUNC":
+                    fname = consume()[1]
+                    consume()  # '('
+                    if fname == "IF":
+                        cond = parse_expr()
+                        if peek()[0] == ",":
+                            consume()
+                        if bool(cond) if isinstance(cond, bool) else (_num(cond) != 0.0):
+                            res = parse_expr()
+                            if peek()[0] == ",":
+                                consume()
+                                _skip_arg()
+                        else:
+                            _skip_arg()
+                            if peek()[0] == ",":
+                                consume()
+                                res = parse_expr()
+                            else:
+                                res = False
+                        if peek()[0] == ")":
+                            consume()
+                        return res
+                    if fname == "IFS":
+                        res = None
+                        matched = False
+                        while peek()[0] not in (")", None):
+                            if not matched:
+                                cond = parse_expr()
+                                if peek()[0] == ",":
+                                    consume()
+                                if bool(cond) if isinstance(cond, bool) else (_num(cond) != 0.0):
+                                    res = parse_expr()
+                                    matched = True
+                                else:
+                                    _skip_arg()
+                            else:
+                                _skip_arg()
+                                if peek()[0] == ",":
+                                    consume()
+                                    _skip_arg()
+                            if peek()[0] == ",":
+                                consume()
+                        if peek()[0] == ")":
+                            consume()
+                        return res
+                    if fname in ("IFERROR", "IFNA"):
+                        try:
+                            res = parse_expr()
+                            if isinstance(res, str) and res.startswith("#"):
+                                raise ValueError(res)
+                            if peek()[0] == ",":
+                                consume()
+                                _skip_arg()
+                        except Exception:
+                            _skip_arg()
+                            if peek()[0] == ",":
+                                consume()
+                                res = parse_expr()
+                            else:
+                                res = 0.0
+                        if peek()[0] == ")":
+                            consume()
+                        return res
+
+                    args = []
+                    while peek()[0] not in (")", None):
+                        if peek()[0] == ",":
+                            args.append(None)
+                            consume()
+                            continue
+                        args.append(_parse_range_or_expr())
+                        if peek()[0] == ",":
+                            consume()
+                    if peek()[0] == ")":
+                        consume()
+
+                    if fname == "SUM":
+                        return sum(_flatten_nums(args))
+                    if fname == "AVERAGE":
+                        nums = _flatten_nums(args)
+                        return (sum(nums) / len(nums)) if nums else 0.0
+                    if fname == "MIN":
+                        nums = _flatten_nums(args)
+                        return min(nums) if nums else 0.0
+                    if fname == "MAX":
+                        nums = _flatten_nums(args)
+                        return max(nums) if nums else 0.0
+                    if fname == "COUNT":
+                        return float(len(_flatten_nums(args)))
+                    if fname == "COUNTA":
+                        cnt = 0
+                        for a in args:
+                            if isinstance(a, tuple) and len(a) == 2 and a[0] == "__GRID__":
+                                cnt += sum(1 for r_arr in a[1] for x in r_arr if x is not None and x != "")
+                            elif a is not None and a != "":
+                                cnt += 1
+                        return float(cnt)
+                    if fname == "ROUND":
+                        return _excel_round(_num(args[0]), _num(args[1]) if len(args) > 1 else 0, ROUND_HALF_UP)
+                    if fname == "ROUNDUP":
+                        return _excel_round(_num(args[0]), _num(args[1]) if len(args) > 1 else 0, ROUND_UP)
+                    if fname == "ROUNDDOWN":
+                        return _excel_round(_num(args[0]), _num(args[1]) if len(args) > 1 else 0, ROUND_DOWN)
+                    if fname == "CEILING":
+                        sig = _num(args[1]) if len(args) > 1 else 1.0
+                        if sig == 0.0:
+                            return 0.0
+                        return float((Decimal(str(_num(args[0]))) / Decimal(str(sig))).to_integral_value(rounding=ROUND_CEILING) * Decimal(str(sig)))
+                    if fname == "FLOOR":
+                        sig = _num(args[1]) if len(args) > 1 else 1.0
+                        if sig == 0.0:
+                            return 0.0
+                        return float((Decimal(str(_num(args[0]))) / Decimal(str(sig))).to_integral_value(rounding=ROUND_FLOOR) * Decimal(str(sig)))
+                    if fname == "INT":
+                        import math
+                        return float(math.floor(_num(args[0])))
+                    if fname == "TRUNC":
+                        return _excel_round(_num(args[0]), _num(args[1]) if len(args) > 1 else 0, ROUND_DOWN)
+                    if fname == "ABS":
+                        return abs(_num(args[0]))
+                    if fname == "MOD":
+                        return _num(args[0]) % _num(args[1])
+                    if fname == "POWER":
+                        return _num(args[0]) ** _num(args[1])
+                    if fname == "SQRT":
+                        return _num(args[0]) ** 0.5
+                    if fname == "AND":
+                        return all(bool(a) if isinstance(a, bool) else (_num(a) != 0.0) for a in args)
+                    if fname == "OR":
+                        return any(bool(a) if isinstance(a, bool) else (_num(a) != 0.0) for a in args)
+                    if fname == "NOT":
+                        a = args[0]
+                        return not (bool(a) if isinstance(a, bool) else (_num(a) != 0.0))
+                    if fname == "ISBLANK":
+                        return args[0] is None or args[0] == ""
+                    if fname == "ISNUMBER":
+                        return _is_num(args[0])
+                    if fname == "ISERROR":
+                        return isinstance(args[0], str) and args[0].startswith("#")
+                    if fname == "TRUE":
+                        return True
+                    if fname == "FALSE":
+                        return False
+                    if fname == "CHOOSE":
+                        idx = int(_num(args[0]))
+                        return args[idx] if 1 <= idx < len(args) else 0.0
+                    if fname == "SUMIF":
+                        r_grid = args[0][1]
+                        crit = args[1]
+                        s_grid = args[2][1] if len(args) > 2 and isinstance(args[2], tuple) else r_grid
+                        op_m = re.match(r"^(<=|>=|<>|<|>|=)(.*)$", str(crit).strip()) if isinstance(crit, str) else None
+                        total = 0.0
+                        for ri, r_arr in enumerate(r_grid):
+                            for ci, cv in enumerate(r_arr):
+                                matched = False
+                                if op_m:
+                                    op_s, rhs_s = op_m.group(1), op_m.group(2)
+                                    rhs = float(rhs_s) if _is_num(rhs_s) else rhs_s
+                                    if op_s == "=": matched = _excel_eq(cv, rhs)
+                                    elif op_s == "<>": matched = not _excel_eq(cv, rhs)
+                                    elif op_s == "<": matched = _excel_cmp(cv, rhs) < 0
+                                    elif op_s == ">": matched = _excel_cmp(cv, rhs) > 0
+                                    elif op_s == "<=": matched = _excel_cmp(cv, rhs) <= 0
+                                    elif op_s == ">=": matched = _excel_cmp(cv, rhs) >= 0
+                                else:
+                                    matched = _match_val(cv, crit)
+                                if matched and ri < len(s_grid) and ci < len(s_grid[ri]):
+                                    sv = s_grid[ri][ci]
+                                    if _is_num(sv):
+                                        total += _num(sv)
+                        return total
+                    if fname == "VLOOKUP":
+                        key = args[0]
+                        grid = args[1][1]
+                        col_idx = int(_num(args[2])) - 1
+                        approx = True if len(args) < 4 or args[3] is None else (bool(args[3]) if isinstance(args[3], bool) else (_num(args[3]) != 0.0))
+                        if not approx:
+                            for r_arr in grid:
+                                if _match_val(r_arr[0], key):
+                                    return r_arr[col_idx]
+                            raise ValueError("#N/A")
+                        last_val = None
+                        for r_arr in grid:
+                            if r_arr[0] is not None and _excel_cmp(r_arr[0], key) <= 0:
+                                last_val = r_arr[col_idx]
+                            elif r_arr[0] is not None and _excel_cmp(r_arr[0], key) > 0:
+                                break
+                        if last_val is None:
+                            raise ValueError("#N/A")
+                        return last_val
+                    if fname == "HLOOKUP":
+                        key = args[0]
+                        grid = args[1][1]
+                        row_idx = int(_num(args[2])) - 1
+                        approx = True if len(args) < 4 or args[3] is None else (bool(args[3]) if isinstance(args[3], bool) else (_num(args[3]) != 0.0))
+                        if not approx:
+                            for ci, cv in enumerate(grid[0]):
+                                if _match_val(cv, key):
+                                    return grid[row_idx][ci]
+                            raise ValueError("#N/A")
+                        last_val = None
+                        for ci, cv in enumerate(grid[0]):
+                            if cv is not None and _excel_cmp(cv, key) <= 0:
+                                last_val = grid[row_idx][ci]
+                            elif cv is not None and _excel_cmp(cv, key) > 0:
+                                break
+                        if last_val is None:
+                            raise ValueError("#N/A")
+                        return last_val
+                    if fname == "MATCH":
+                        key = args[0]
+                        grid = args[1][1]
+                        flat = [x for r_arr in grid for x in r_arr]
+                        mtype = 1 if len(args) < 3 or args[2] is None else int(_num(args[2]))
+                        if mtype == 0:
+                            for idx, cv in enumerate(flat, start=1):
+                                if _match_val(cv, key):
+                                    return float(idx)
+                            raise ValueError("#N/A")
+                        if mtype >= 1:
+                            last_idx = None
+                            for idx, cv in enumerate(flat, start=1):
+                                if cv is not None and _excel_cmp(cv, key) <= 0:
+                                    last_idx = idx
+                            if last_idx is None:
+                                raise ValueError("#N/A")
+                            return float(last_idx)
+                        last_idx = None
+                        for idx, cv in enumerate(flat, start=1):
+                            if cv is not None and _excel_cmp(cv, key) >= 0:
+                                last_idx = idx
+                        if last_idx is None:
+                            raise ValueError("#N/A")
+                        return float(last_idx)
+                    if fname == "INDEX":
+                        grid = args[0][1]
+                        r_num = int(_num(args[1])) if len(args) > 1 and args[1] is not None else 1
+                        c_num = int(_num(args[2])) if len(args) > 2 and args[2] is not None else None
+                        if c_num is None:
+                            if len(grid) == 1:
+                                return grid[0][r_num - 1]
+                            if len(grid[0]) == 1:
+                                return grid[r_num - 1][0]
+                            return grid[r_num - 1][0]
+                        return grid[r_num - 1][c_num - 1]
+                    raise ValueError(f"Unsupported Excel function: {fname}")
+                raise ValueError(f"Unexpected token ({t}, {v}) in {formula}")
+
+            return parse_expr()
+
+        def _get_cell_value(s_name, r_idx, c_idx, visiting=None):
+            if visiting is None:
+                visiting = set()
+            key = (s_name, r_idx, c_idx)
+            if key in overrides:
+                return overrides[key]
+            if key in memo:
+                return memo[key]
+            if key in visiting:
+                return 0.0
+            if s_name not in wb.sheetnames:
+                return 0.0
+            raw = wb[s_name].cell(row=r_idx, column=c_idx).value
+            if isinstance(raw, str) and raw.startswith("="):
+                visiting.add(key)
+                try:
+                    val = _eval_formula(raw, s_name, visiting)
+                except Exception:
+                    val = wb_cached[s_name].cell(row=r_idx, column=c_idx).value if wb_cached and s_name in wb_cached.sheetnames else 0.0
+                finally:
+                    visiting.discard(key)
+                memo[key] = val
+                return val
+            memo[key] = raw
+            return raw
+
+        d_val = _to_float(_get_cell_value(sheet_name, row, 4))
+        e_val = _to_float(_get_cell_value(sheet_name, row, 5))
+        f_val = _to_float(_get_cell_value(sheet_name, row, 6))
+        h_val = _to_float(_get_cell_value(sheet_name, row, 8))
 
         if origin_upper == "HAN":
-            fcf_as_val = _eval_cell(ws[f"I{row}"].value, wt_val, input_cell)
-            fcf_ad_val = _eval_cell(ws[f"J{row}"].value, wt_val, input_cell)
+            fcf_as_val = _to_float(_get_cell_value(sheet_name, row, 9))
+            fcf_ad_val = _to_float(_get_cell_value(sheet_name, row, 10))
             mag1_val, mag2_val = 0.0, 0.0
             fcf_as_cell, fcf_ad_cell = f"I{row}", f"J{row}"
         else:
-            mag1_val = _eval_cell(ws[f"I{row}"].value, wt_val, input_cell)
-            mag2_val = _eval_cell(ws[f"J{row}"].value, wt_val, input_cell)
-            fcf_as_val = _eval_cell(ws[f"K{row}"].value, wt_val, input_cell)
-            fcf_ad_val = _eval_cell(ws[f"L{row}"].value, wt_val, input_cell)
+            mag1_val = _to_float(_get_cell_value(sheet_name, row, 9))
+            mag2_val = _to_float(_get_cell_value(sheet_name, row, 10))
+            fcf_as_val = _to_float(_get_cell_value(sheet_name, row, 11))
+            fcf_ad_val = _to_float(_get_cell_value(sheet_name, row, 12))
             fcf_as_cell, fcf_ad_cell = f"K{row}", f"L{row}"
 
         return {
@@ -382,6 +1034,17 @@ def _open_calculate_excel_rates(excel_path, sheet_name, chargeable_wt, origin="P
         if log_fn:
             log_fn(f"[ERROR] Excel parsing failed: {pyxl_err}")
         return None
+    finally:
+        if wb_cached:
+            try:
+                wb_cached.close()
+            except Exception:
+                pass
+        if wb:
+            try:
+                wb.close()
+            except Exception:
+                pass
 
 
 def _open_parse_hawb_charges_grid(driver):
