@@ -365,6 +365,8 @@ def _open_calculate_excel_rates(excel_path, sheet_name, chargeable_wt, origin="P
             "FSC_CELL": f"F{row}", "HAN_CELL": f"H{row}",
             "FCF_AS_CELL": fcf_as_cell, "FCF_AD_CELL": fcf_ad_cell,
         }
+    except ImportError:
+        pass
     except Exception as com_err:
         if log_fn:
             log_fn(f"[WARN] Excel COM calculation failed, using openpyxl fallback: {com_err}")
