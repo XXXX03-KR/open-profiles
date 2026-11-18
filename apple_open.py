@@ -246,8 +246,7 @@ def _open_find_matching_excel_sheet(excel_path, pup_month, pup_day, log_fn=None)
             else:
                 if target >= start_t or target <= end_t:
                     matches.append(name)
-    if len(matches) > 1 and log_fn:
-        log_fn(f"[WARN] Multiple Excel sheets match PUP {int(pup_month):02d}-{int(pup_day):02d}: {matches} -> using '{matches[0]}'")
+    # Several sheets may overlap the PUP date; sheet_names is scanned newest-first, so matches[0] is the latest one.
     return matches[0] if matches else None
 
 
@@ -299,8 +298,6 @@ def _open_calculate_excel_rates(excel_path, sheet_name, chargeable_wt, origin="P
                     reason = f"non-numeric {s!r}"
         if reason:
             bad[cell or "?"] = reason
-            if log_fn:
-                log_fn(f"[WARN] Excel cell {cell} read as 0 ({reason}); raw={v!r}")
             return 0.0
         return out
 
@@ -362,6 +359,20 @@ def _open_calculate_excel_rates(excel_path, sheet_name, chargeable_wt, origin="P
         except Exception:
             pass
 
+        # Formula cells never come back as None once calculated; poll the same row until D/E/F/H are filled.
+        def _row_ready():
+            try:
+                return all(target_ws.Range(f"{c}{row}").Value2 is not None for c in ("D", "E", "F", "H"))
+            except Exception:
+                return True
+        _t0 = time.time()
+        while not _row_ready() and (time.time() - _t0) < 5.0:
+            try:
+                target_ws.Calculate()
+            except Exception:
+                pass
+            time.sleep(0.2)
+
         try:
             _echo = target_ws.Range(input_cell).MergeArea.Cells(1, 1).Value2
             if _echo is None or abs(float(_echo) - wt_val) > 1e-9:
@@ -396,7 +407,8 @@ def _open_calculate_excel_rates(excel_path, sheet_name, chargeable_wt, origin="P
             "FCF_AS_CELL": fcf_as_cell, "FCF_AD_CELL": fcf_ad_cell,
         }
     except ImportError:
-        pass
+        if log_fn:
+            log_fn("[WARN] pywin32 not available - using openpyxl evaluator (formulas are evaluated in Python)")
     except Exception as com_err:
         if log_fn:
             log_fn(f"[WARN] Excel COM calculation failed, using openpyxl fallback: {com_err}")
@@ -1036,6 +1048,8 @@ def _open_calculate_excel_rates(excel_path, sheet_name, chargeable_wt, origin="P
                     stale[f"{s_name}!{get_column_letter(c_idx)}{r_idx}"] = f"{type(_fe).__name__}: {_fe} (old cached value {val!r} is NOT recalculated)"
                 finally:
                     visiting.discard(key)
+                if val is None:
+                    val = 0.0
                 memo[key] = val
                 return val
             memo[key] = raw
@@ -2197,6 +2211,7 @@ def _run_apple_open_profile(ctx: _OpenContext):
                     if bad_used or stale_used:
                         parts = [f"{c}: {r}" for c, r in bad_used.items()] + [f"{c}: {r}" for c, r in stale_used.items()]
                         err_msg = f"Excel value could not be read/calculated (sheet '{matched_sheet}'): " + " | ".join(parts)
+                        ctx.log(f"[WARN] {target_hawb_no}: {err_msg}")
                         ctx.add_irr({
                             "pup_date": pup_date_text, "origin": current_origin, "mawb": target_mawb_no,
                             "hawb": target_hawb_no, "desc": err_msg, "corr": "",
