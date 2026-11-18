@@ -606,7 +606,11 @@ def _open_calculate_excel_rates(excel_path, sheet_name, chargeable_wt, origin="P
                     while p < n and formula[p].isspace():
                         p += 1
                     if p < n and formula[p] == "(":
-                        tokens.append(("FUNC", ident.upper()))
+                        _fn = ident.upper()
+                        for _pre in ("_XLFN.", "_XLWS."):
+                            if _fn.startswith(_pre):
+                                _fn = _fn[len(_pre):]
+                        tokens.append(("FUNC", _fn))
                         i = j
                         continue
                     up = ident.upper()
@@ -626,6 +630,7 @@ def _open_calculate_excel_rates(excel_path, sheet_name, chargeable_wt, origin="P
         def _eval_formula(formula, cur_sheet, visiting):
             tokens = _tokenize(formula[1:])
             pos = [0]
+            let_vars = {}  # LET(name, value, ..., result) local names (case-insensitive)
 
             def peek(offset=0):
                 idx = pos[0] + offset
@@ -768,6 +773,13 @@ def _open_calculate_excel_rates(excel_path, sheet_name, chargeable_wt, origin="P
                     if peek()[0] == ")":
                         consume()
                     return val
+                if t == "IDENT":
+                    if v.lower() in let_vars:
+                        consume()
+                        return let_vars[v.lower()]
+                if t == "CELL" and v[0] is None and v[1].lower() in let_vars:
+                    consume()
+                    return let_vars[v[1].lower()]
                 if t == "CELL":
                     _, (s_name, ref) = consume()
                     ts = s_name or cur_sheet
@@ -776,6 +788,28 @@ def _open_calculate_excel_rates(excel_path, sheet_name, chargeable_wt, origin="P
                 if t == "FUNC":
                     fname = consume()[1]
                     consume()  # '('
+                    if fname == "LET":
+                        _saved = dict(let_vars)
+                        try:
+                            while True:
+                                _nt, _nv = peek()
+                                _is_name = (_nt == "IDENT" or (_nt == "CELL" and _nv[0] is None)) and peek(1)[0] == ","
+                                if _is_name:
+                                    _name = (_nv if _nt == "IDENT" else _nv[1]).lower()
+                                    consume()
+                                    consume()  # ','
+                                    let_vars[_name] = parse_expr()
+                                    if peek()[0] == ",":
+                                        consume()
+                                else:
+                                    res = parse_expr()
+                                    break
+                            if peek()[0] == ")":
+                                consume()
+                        finally:
+                            let_vars.clear()
+                            let_vars.update(_saved)
+                        return res
                     if fname == "IF":
                         cond = parse_expr()
                         if peek()[0] == ",":
