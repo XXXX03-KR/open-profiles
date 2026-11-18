@@ -1131,6 +1131,13 @@ def _open_calculate_excel_rates(excel_path, sheet_name, chargeable_wt, origin="P
                 pass
 
 
+def _open_fmt_amt(val):
+    try:
+        return f"{float(str(val).replace(',', '').strip()):.2f}"
+    except Exception:
+        return "" if val is None else str(val).strip()
+
+
 def _open_parse_hawb_charges_grid(driver):
     charge_rows = driver.find_elements(By.CSS_SELECTOR, "div.charges-grid table.k-grid-table tbody tr.k-master-row")
     parsed_charges = []
@@ -2270,8 +2277,8 @@ def _run_apple_open_profile(ctx: _OpenContext):
                             pre_mismatches.append(err_msg)
                             ctx.add_irr({"pup_date": pup_date_text, "origin": current_origin, "mawb": target_mawb_no, "hawb": target_hawb_no, "desc": err_msg, "corr": "", "open_date": datetime.now().strftime("%m-%d %H:%M")})
                         if not ctx.is_amount_equal(wb_val, expected_frtrv):
-                            pre_mismatches.append(f"FRTRV UFS Amt ({wb_val}) != Excel {target_frt_cell} ({expected_frtrv})")
-                            ctx.add_irr({"pup_date": pup_date_text, "origin": current_origin, "mawb": target_mawb_no, "hawb": target_hawb_no, "desc": f"FRTRV ${wb_val}", "corr": f"FRTRV ${expected_frtrv}", "open_date": datetime.now().strftime("%m-%d %H:%M")})
+                            pre_mismatches.append(f"FRTRV UFS Amt ({wb_val}) != APPLE RATE DATA ({expected_frtrv})")
+                            ctx.add_irr({"pup_date": pup_date_text, "origin": current_origin, "mawb": target_mawb_no, "hawb": target_hawb_no, "desc": f"FRTRV ${_open_fmt_amt(wb_val)}", "corr": f"FRTRV ${_open_fmt_amt(expected_frtrv)}", "open_date": datetime.now().strftime("%m-%d %H:%M")})
                     else:
                         pre_mismatches.append("FRTRV code missing from initial charges")
                         ctx.add_irr({"pup_date": pup_date_text, "origin": current_origin, "mawb": target_mawb_no, "hawb": target_hawb_no, "desc": "FRTRV code missing from initial charges", "corr": "", "open_date": datetime.now().strftime("%m-%d %H:%M")})
@@ -2284,8 +2291,8 @@ def _run_apple_open_profile(ctx: _OpenContext):
                             pre_mismatches.append(err_msg)
                             ctx.add_irr({"pup_date": pup_date_text, "origin": current_origin, "mawb": target_mawb_no, "hawb": target_hawb_no, "desc": err_msg, "corr": "", "open_date": datetime.now().strftime("%m-%d %H:%M")})
                         if not ctx.is_amount_equal(wb_val, expected_fscrv):
-                            pre_mismatches.append(f"FSCRV UFS Amt ({wb_val}) != Excel {target_fsc_cell} ({expected_fscrv})")
-                            ctx.add_irr({"pup_date": pup_date_text, "origin": current_origin, "mawb": target_mawb_no, "hawb": target_hawb_no, "desc": f"FSCRV ${wb_val}", "corr": f"FSCRV ${expected_fscrv}", "open_date": datetime.now().strftime("%m-%d %H:%M")})
+                            pre_mismatches.append(f"FSCRV UFS Amt ({wb_val}) != APPLE RATE DATA ({expected_fscrv})")
+                            ctx.add_irr({"pup_date": pup_date_text, "origin": current_origin, "mawb": target_mawb_no, "hawb": target_hawb_no, "desc": f"FSCRV ${_open_fmt_amt(wb_val)}", "corr": f"FSCRV ${_open_fmt_amt(expected_fscrv)}", "open_date": datetime.now().strftime("%m-%d %H:%M")})
                     else:
                         pre_mismatches.append("FSCRV code missing from initial charges")
                         ctx.add_irr({"pup_date": pup_date_text, "origin": current_origin, "mawb": target_mawb_no, "hawb": target_hawb_no, "desc": "FSCRV code missing from initial charges", "corr": "", "open_date": datetime.now().strftime("%m-%d %H:%M")})
@@ -2300,8 +2307,8 @@ def _run_apple_open_profile(ctx: _OpenContext):
                                 ctx.add_irr({"pup_date": pup_date_text, "origin": current_origin, "mawb": target_mawb_no, "hawb": target_hawb_no, "desc": err_msg, "corr": "", "open_date": datetime.now().strftime("%m-%d %H:%M")})
                             cand_i, cand_j = excel_calc["MAG1"], excel_calc["MAG2"]
                             if not (ctx.is_amount_equal(wb_val, cand_i) or ctx.is_amount_equal(wb_val, cand_j)):
-                                pre_mismatches.append(f"MAGNERV UFS Amt ({wb_val}) != Excel I24 ({cand_i}) or J24 ({cand_j})")
-                                ctx.add_irr({"pup_date": pup_date_text, "origin": current_origin, "mawb": target_mawb_no, "hawb": target_hawb_no, "desc": f"MAGNERV ${wb_val}", "corr": f"MAGNERV ${cand_i}", "open_date": datetime.now().strftime("%m-%d %H:%M")})
+                                pre_mismatches.append(f"MAGNERV UFS Amt ({wb_val}) != APPLE RATE DATA ({cand_i}) or ({cand_j})")
+                                ctx.add_irr({"pup_date": pup_date_text, "origin": current_origin, "mawb": target_mawb_no, "hawb": target_hawb_no, "desc": f"MAGNERV ${_open_fmt_amt(wb_val)}", "corr": f"MAGNERV ${_open_fmt_amt(cand_i)}", "open_date": datetime.now().strftime("%m-%d %H:%M")})
                         else:
                             pre_mismatches.append("MAGNERV code missing from initial charges")
                             ctx.add_irr({"pup_date": pup_date_text, "origin": current_origin, "mawb": target_mawb_no, "hawb": target_hawb_no, "desc": "MAGNERV code missing from initial charges", "corr": "", "open_date": datetime.now().strftime("%m-%d %H:%M")})
@@ -2374,7 +2381,7 @@ def _run_apple_open_profile(ctx: _OpenContext):
                             ctx.add_irr({"pup_date": pup_date_text, "origin": current_origin, "mawb": target_mawb_no, "hawb": target_hawb_no, "desc": err_msg, "corr": "", "open_date": datetime.now().strftime("%m-%d %H:%M")})
                         if not ctx.is_amount_equal(wb_val, expected_handrv):
                             handrv_mismatches.append(f"HANDRV UFS Amt ({wb_val}) != Excel {target_han_cell} ({expected_handrv})")
-                            ctx.add_irr({"pup_date": pup_date_text, "origin": current_origin, "mawb": target_mawb_no, "hawb": target_hawb_no, "desc": f"HANDRV ${wb_val}", "corr": f"HANDRV ${expected_handrv}", "open_date": datetime.now().strftime("%m-%d %H:%M")})
+                            ctx.add_irr({"pup_date": pup_date_text, "origin": current_origin, "mawb": target_mawb_no, "hawb": target_hawb_no, "desc": f"HANDRV ${_open_fmt_amt(wb_val)}", "corr": f"HANDRV ${_open_fmt_amt(expected_handrv)}", "open_date": datetime.now().strftime("%m-%d %H:%M")})
                     else:
                         handrv_mismatches.append("HANDRV code missing from charges")
                         ctx.add_irr({"pup_date": pup_date_text, "origin": current_origin, "mawb": target_mawb_no, "hawb": target_hawb_no, "desc": "HANDRV code missing from charges", "corr": "", "open_date": datetime.now().strftime("%m-%d %H:%M")})
@@ -2483,25 +2490,25 @@ def _run_apple_open_profile(ctx: _OpenContext):
                             ctx.add_irr({"pup_date": pup_date_text, "origin": current_origin, "mawb": target_mawb_no, "hawb": target_hawb_no, "desc": err_msg, "corr": "", "open_date": datetime.now().strftime("%m-%d %H:%M")})
                         if not ctx.is_amount_equal(wb_val, expected_fcfad):
                             post_mismatches.append("FCFAD mismatch")
-                            ctx.add_irr({"pup_date": pup_date_text, "origin": current_origin, "mawb": target_mawb_no, "hawb": target_hawb_no, "desc": f"FCFAD ${wb_val}", "corr": f"FCFAD ${expected_fcfad}", "open_date": datetime.now().strftime("%m-%d %H:%M")})
+                            ctx.add_irr({"pup_date": pup_date_text, "origin": current_origin, "mawb": target_mawb_no, "hawb": target_hawb_no, "desc": f"FCFAD ${_open_fmt_amt(wb_val)}", "corr": f"FCFAD ${_open_fmt_amt(expected_fcfad)}", "open_date": datetime.now().strftime("%m-%d %H:%M")})
                     else:
                         post_mismatches.append("FCFAD missing")
                         ctx.add_irr({"pup_date": pup_date_text, "origin": current_origin, "mawb": target_mawb_no, "hawb": target_hawb_no, "desc": "FCFAD charge code was not generated after save", "corr": "", "open_date": datetime.now().strftime("%m-%d %H:%M")})
 
                     if "HANDRV" in post_map and not ctx.is_amount_equal(post_map["HANDRV"]["wb_amt"], expected_handrv):
                         post_mismatches.append("HANDRV final mismatch")
-                        ctx.add_irr({"pup_date": pup_date_text, "origin": current_origin, "mawb": target_mawb_no, "hawb": target_hawb_no, "desc": f"HANDRV ${post_map['HANDRV']['wb_amt']}", "corr": f"HANDRV ${expected_handrv}", "open_date": datetime.now().strftime("%m-%d %H:%M")})
+                        ctx.add_irr({"pup_date": pup_date_text, "origin": current_origin, "mawb": target_mawb_no, "hawb": target_hawb_no, "desc": f"HANDRV ${_open_fmt_amt(post_map['HANDRV']['wb_amt'])}", "corr": f"HANDRV ${_open_fmt_amt(expected_handrv)}", "open_date": datetime.now().strftime("%m-%d %H:%M")})
                     if "FRTRV" in post_map and not ctx.is_amount_equal(post_map["FRTRV"]["wb_amt"], expected_frtrv):
                         post_mismatches.append("FRTRV final mismatch")
-                        ctx.add_irr({"pup_date": pup_date_text, "origin": current_origin, "mawb": target_mawb_no, "hawb": target_hawb_no, "desc": f"FRTRV ${post_map['FRTRV']['wb_amt']}", "corr": f"FRTRV ${expected_frtrv}", "open_date": datetime.now().strftime("%m-%d %H:%M")})
+                        ctx.add_irr({"pup_date": pup_date_text, "origin": current_origin, "mawb": target_mawb_no, "hawb": target_hawb_no, "desc": f"FRTRV ${_open_fmt_amt(post_map['FRTRV']['wb_amt'])}", "corr": f"FRTRV ${_open_fmt_amt(expected_frtrv)}", "open_date": datetime.now().strftime("%m-%d %H:%M")})
                     if "FSCRV" in post_map and not ctx.is_amount_equal(post_map["FSCRV"]["wb_amt"], expected_fscrv):
                         post_mismatches.append("FSCRV final mismatch")
-                        ctx.add_irr({"pup_date": pup_date_text, "origin": current_origin, "mawb": target_mawb_no, "hawb": target_hawb_no, "desc": f"FSCRV ${post_map['FSCRV']['wb_amt']}", "corr": f"FSCRV ${expected_fscrv}", "open_date": datetime.now().strftime("%m-%d %H:%M")})
+                        ctx.add_irr({"pup_date": pup_date_text, "origin": current_origin, "mawb": target_mawb_no, "hawb": target_hawb_no, "desc": f"FSCRV ${_open_fmt_amt(post_map['FSCRV']['wb_amt'])}", "corr": f"FSCRV ${_open_fmt_amt(expected_fscrv)}", "open_date": datetime.now().strftime("%m-%d %H:%M")})
                     if is_pvg and has_magnerv_initial and "MAGNERV" in post_map:
                         mag_w = post_map["MAGNERV"]["wb_amt"]
                         if not (ctx.is_amount_equal(mag_w, excel_calc["MAG1"]) or ctx.is_amount_equal(mag_w, excel_calc["MAG2"])):
                             post_mismatches.append("MAGNERV final mismatch")
-                            ctx.add_irr({"pup_date": pup_date_text, "origin": current_origin, "mawb": target_mawb_no, "hawb": target_hawb_no, "desc": f"MAGNERV ${mag_w}", "corr": f"MAGNERV ${excel_calc['MAG1']}", "open_date": datetime.now().strftime("%m-%d %H:%M")})
+                            ctx.add_irr({"pup_date": pup_date_text, "origin": current_origin, "mawb": target_mawb_no, "hawb": target_hawb_no, "desc": f"MAGNERV ${_open_fmt_amt(mag_w)}", "corr": f"MAGNERV ${_open_fmt_amt(excel_calc['MAG1'])}", "open_date": datetime.now().strftime("%m-%d %H:%M")})
 
                     if post_mismatches:
                         try:
