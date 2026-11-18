@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""APPLE vendor open profile (UFS+ TOOL OPEN menu).
+"""APPLE vendor open profile (UFS+ TOOL OPEN menu).V1.0
 Contract: PROFILE_NAME + run(ctx). Supports Target MAWB (ctx.only_mawbs / ctx.is_target).
 """
 import os
