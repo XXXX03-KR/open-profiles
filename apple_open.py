@@ -26,6 +26,14 @@ def _open_extract_service_type_from_text(raw_text):
     if not raw_str:
         return None, None
 
+    # Service: TR -> AS/AD 로 오분류되지 않도록 가장 먼저 판별
+    _svc_kw = r'(?:SERVICE|SERIVCE|SRVICE|SERVC|SVC|SRV)'
+    _upper = raw_str.upper()
+    # 대소문자/공백/콜론/기타 구분자 유무와 무관 (ex. ServiceTR, service tr, Service: TR, Service_TR)
+    if (re.search(_svc_kw + r'[^A-Z0-9]*(?:TYPE)?[^A-Z0-9]*TR(?![A-Z0-9])', _upper)
+            or re.search(r'(?<![A-Z0-9])TR[^A-Z0-9]*' + _svc_kw, _upper)):
+        return "TR", "TR"
+
     clean = re.sub(r'[^A-Z0-9]', '', raw_str.upper())
 
     m_after = re.search(r'(?:SERVICE|SERIVCE|SRVICE|SERVC|SVC|SRV)(.*)', clean)
@@ -2091,12 +2099,12 @@ def _run_apple_open_profile(ctx: _OpenContext):
                             return results;
                         """)
                         if js_values:
-                            for jv in js_values:
-                                _st, s_code = _open_extract_service_type_from_text(jv)
-                                if s_code:
-                                    service_code = s_code
-                                    matched_ref_text = jv
-                                    break
+                            _parsed_js = [(jv, _open_extract_service_type_from_text(jv)[1]) for jv in js_values]
+                            _tr_hit = next((x for x in _parsed_js if x[1] == "TR"), None)
+                            _any_hit = next((x for x in _parsed_js if x[1]), None)
+                            _pick = _tr_hit or _any_hit
+                            if _pick:
+                                matched_ref_text, service_code = _pick
                     except Exception:
                         pass
 
@@ -2168,6 +2176,21 @@ def _run_apple_open_profile(ctx: _OpenContext):
                         continue
 
                     ctx.log(f"[INFO] Service: '{matched_ref_text}' -> [{service_code}]")
+
+                    # Service Type: TR -> 처리하지 않고 IRR 로 이관
+                    if service_code == "TR":
+                        ctx.add_irr({
+                            "pup_date": pup_date_text, "origin": current_origin, "mawb": target_mawb_no,
+                            "hawb": target_hawb_no, "desc": "Service Type: TR", "corr": "",
+                            "open_date": datetime.now().strftime("%m-%d %H:%M")
+                        })
+                        try:
+                            driver.close()
+                            driver.switch_to.window(mawb_window)
+                        except Exception:
+                            pass
+                        time.sleep(2)
+                        continue
 
                     # [HAWB 작업 4] Shipment Details -> Chargeable Weight
                     shipment_details_tab = wait.until(
