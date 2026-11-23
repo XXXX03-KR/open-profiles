@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""APPLE vendor open profile (UFS+ TOOL OPEN menu).V1.0
+"""APPLE vendor open profile (UFS+ TOOL OPEN menu).V1.1
 Contract: PROFILE_NAME + run(ctx). Supports Target MAWB (ctx.only_mawbs / ctx.is_target).
 """
 import os
@@ -278,7 +278,7 @@ def _open_calculate_excel_rates(excel_path, sheet_name, chargeable_wt, origin="P
         return None
 
     origin_upper = str(origin).upper().strip()
-    row = 16 if origin_upper == "HAN" else 24
+    row = 16 if origin_upper == "HAN" else (17 if origin_upper == "BKK" else 24)
     input_cell = f"B{row}"
 
     bad = {}    # cell -> reason (empty / Excel error / non-numeric). Never silently treated as a real 0.
@@ -394,7 +394,7 @@ def _open_calculate_excel_rates(excel_path, sheet_name, chargeable_wt, origin="P
         f_val = _to_float(target_ws.Range(f"F{row}").Value2, f"F{row}")
         h_val = _to_float(target_ws.Range(f"H{row}").Value2, f"H{row}")
 
-        if origin_upper == "HAN":
+        if origin_upper in ("HAN", "BKK"):
             fcf_as_val = _to_float(target_ws.Range(f"I{row}").Value2, f"I{row}")
             fcf_ad_val = _to_float(target_ws.Range(f"J{row}").Value2, f"J{row}")
             mag1_val, mag2_val = 0.0, 0.0
@@ -1102,7 +1102,7 @@ def _open_calculate_excel_rates(excel_path, sheet_name, chargeable_wt, origin="P
         f_val = _to_float(_get_cell_value(sheet_name, row, 6), f"{get_column_letter(6)}{row}")
         h_val = _to_float(_get_cell_value(sheet_name, row, 8), f"{get_column_letter(8)}{row}")
 
-        if origin_upper == "HAN":
+        if origin_upper in ("HAN", "BKK"):
             fcf_as_val = _to_float(_get_cell_value(sheet_name, row, 9), f"{get_column_letter(9)}{row}")
             fcf_ad_val = _to_float(_get_cell_value(sheet_name, row, 10), f"{get_column_letter(10)}{row}")
             mag1_val, mag2_val = 0.0, 0.0
@@ -1409,7 +1409,7 @@ def _run_apple_open_profile(ctx: _OpenContext):
         try:
             origin_port_el = row.find_element(By.CSS_SELECTOR, "td:nth-child(15)")
             origin_port = origin_port_el.text.strip().upper()
-            if origin_port not in ["PVG", "HAN"]:
+            if origin_port not in ["PVG", "HAN", "BKK"]:
                 continue
 
             arr_cb = row.find_element(By.CSS_SELECTOR, "input[name='acknowledge_alert']")
@@ -1454,14 +1454,14 @@ def _run_apple_open_profile(ctx: _OpenContext):
                         break
                 except Exception:
                     continue
-            if _org and _org not in ("PVG", "HAN"):
+            if _org and _org not in ("PVG", "HAN", "BKK"):
                 ctx.log(f"[WARN] {_t}: origin {_org} not supported - skipped")
                 continue
             if _t not in target_origin_mawbs:
                 target_origin_mawbs.append(_t)
             if _org:
                 mawb_origin_map[_t] = _org
-    ctx.log(f"[INFO] Candidates (PVG/HAN): {len(target_origin_mawbs)}")
+    ctx.log(f"[INFO] Candidates (PVG/HAN/BKK): {len(target_origin_mawbs)}")
 
     final_apple_mawbs = []
     for index, mawb_no in enumerate(target_origin_mawbs, start=1):
@@ -1540,7 +1540,7 @@ def _run_apple_open_profile(ctx: _OpenContext):
                             break
                     except Exception:
                         continue
-            if not target_mawb_origin or target_mawb_origin not in ["PVG", "HAN"]:
+            if not target_mawb_origin or target_mawb_origin not in ["PVG", "HAN", "BKK"]:
                 target_mawb_origin = "PVG"
 
             ctx.active_context["mawb"] = target_mawb_no
@@ -1945,6 +1945,7 @@ def _run_apple_open_profile(ctx: _OpenContext):
                 current_origin = target_mawb_origin
                 is_pvg = (current_origin == "PVG")
                 is_han = (current_origin == "HAN")
+                is_bkk = (current_origin == "BKK")
 
                 ctx.active_context["hawb"] = target_hawb_no
                 ctx.active_context["origin"] = current_origin
@@ -2266,11 +2267,13 @@ def _run_apple_open_profile(ctx: _OpenContext):
                     ctx.log(f"[INFO] Excel [{excel_calc.get('SOURCE')}] sheet='{matched_sheet}' wt={chargeable_wt} svc={service_code} | "
                             f"{target_frt_cell}={expected_frtrv} {target_fsc_cell}={expected_fscrv} {target_han_cell}={expected_handrv} {fcf_cell_used}={fcf_val_used}")
                     bad_used = {c: r for c, r in excel_calc.get("BAD", {}).items()
-                                if c in (target_frt_cell, target_fsc_cell, target_han_cell, fcf_cell_used)}
+                                if c in (target_frt_cell, target_han_cell, fcf_cell_used) or (c == target_fsc_cell and not is_bkk)}
                     _unused = {excel_calc["FRT_AD_CELL"] if service_code == "AS" else excel_calc["FRT_AS_CELL"],
                                excel_calc["FCF_AD_CELL"] if service_code == "AS" else excel_calc["FCF_AS_CELL"]}
                     if not (is_pvg and has_magnerv_initial):
                         _unused |= {f"I{excel_calc['row']}", f"J{excel_calc['row']}"}
+                    if is_bkk:
+                        _unused.add(excel_calc["FSC_CELL"])
                     stale_used = {k: v for k, v in excel_calc.get("STALE", {}).items() if k.rsplit("!", 1)[-1] not in _unused}
                     if bad_used or stale_used:
                         parts = [f"{c}: {r}" for c, r in bad_used.items()] + [f"{c}: {r}" for c, r in stale_used.items()]
@@ -2306,7 +2309,13 @@ def _run_apple_open_profile(ctx: _OpenContext):
                         pre_mismatches.append("FRTRV code missing from initial charges")
                         ctx.add_irr({"pup_date": pup_date_text, "origin": current_origin, "mawb": target_mawb_no, "hawb": target_hawb_no, "desc": "FRTRV code missing from initial charges", "corr": "", "open_date": datetime.now().strftime("%m-%d %H:%M")})
 
-                    if "FSCRV" in initial_charges_map:
+                    if is_bkk:
+                        _bkk_extra_codes = sorted(set(present_codes) - {"HANDRV", "FRTRV"})
+                        if _bkk_extra_codes:
+                            err_msg = f"Unexpected initial charge codes found in BKK shipment (expected only HANDRV, FRTRV): {_bkk_extra_codes}"
+                            pre_mismatches.append(err_msg)
+                            ctx.add_irr({"pup_date": pup_date_text, "origin": current_origin, "mawb": target_mawb_no, "hawb": target_hawb_no, "desc": err_msg, "corr": "", "open_date": datetime.now().strftime("%m-%d %H:%M")})
+                    elif "FSCRV" in initial_charges_map:
                         fsc_data = initial_charges_map["FSCRV"]
                         wb_val, inv_val = fsc_data["wb_amt"], fsc_data["inv_amt"]
                         if not ctx.is_amount_equal(wb_val, inv_val):
@@ -2444,6 +2453,8 @@ def _run_apple_open_profile(ctx: _OpenContext):
                     expected_all_codes = {"FCFAD", "FCFOAD", "HANDRV", "FRTRV", "FSCRV"}
                     if is_pvg and has_magnerv_initial:
                         expected_all_codes.add("MAGNERV")
+                    if is_bkk:
+                        expected_all_codes = {"FCFAD", "HANDRV", "FRTRV"}
 
                     post_charges = []
                     post_codes = []
@@ -2524,7 +2535,7 @@ def _run_apple_open_profile(ctx: _OpenContext):
                     if "FRTRV" in post_map and not ctx.is_amount_equal(post_map["FRTRV"]["wb_amt"], expected_frtrv):
                         post_mismatches.append("FRTRV final mismatch")
                         ctx.add_irr({"pup_date": pup_date_text, "origin": current_origin, "mawb": target_mawb_no, "hawb": target_hawb_no, "desc": f"FRTRV ${_open_fmt_amt(post_map['FRTRV']['wb_amt'])}", "corr": f"FRTRV ${_open_fmt_amt(expected_frtrv)}", "open_date": datetime.now().strftime("%m-%d %H:%M")})
-                    if "FSCRV" in post_map and not ctx.is_amount_equal(post_map["FSCRV"]["wb_amt"], expected_fscrv):
+                    if "FSCRV" in post_map and not is_bkk and not ctx.is_amount_equal(post_map["FSCRV"]["wb_amt"], expected_fscrv):
                         post_mismatches.append("FSCRV final mismatch")
                         ctx.add_irr({"pup_date": pup_date_text, "origin": current_origin, "mawb": target_mawb_no, "hawb": target_hawb_no, "desc": f"FSCRV ${_open_fmt_amt(post_map['FSCRV']['wb_amt'])}", "corr": f"FSCRV ${_open_fmt_amt(expected_fscrv)}", "open_date": datetime.now().strftime("%m-%d %H:%M")})
                     if is_pvg and has_magnerv_initial and "MAGNERV" in post_map:
