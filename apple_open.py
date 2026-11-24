@@ -1998,21 +1998,31 @@ def _run_apple_open_profile(ctx: _OpenContext):
                     disposition_dropdown = wait.until(
                         EC.element_to_be_clickable((By.XPATH, "//select[@name='disposition']/ancestor::span[contains(@class, 'k-dropdown')]//span[contains(@class, 'k-dropdown-wrap')] | //span[contains(@id, '__disposition') and contains(@class, 'k-dropdown-wrap')]"))
                     )
-                    try: disposition_dropdown.click()
-                    except Exception: driver.execute_script("arguments[0].click();", disposition_dropdown)
-                    time.sleep(0.5)
-                    active_el = driver.switch_to.active_element
-                    active_el.send_keys("kwe")
-                    time.sleep(0.3)
-                    active_el.send_keys(Keys.TAB)
-                    time.sleep(0.5)
+                    for _disp_try in range(3):
+                        if _disp_try > 0:
+                            ctx.log(f"[RETRY] Disposition 'KWE' selection failed (Current: '{disp_input_text}') -> retry {_disp_try}/2")
+                            time.sleep(2)
+                            try:
+                                WebDriverWait(driver, 10).until_not(EC.presence_of_element_located((By.CSS_SELECTOR, ".k-loading-mask, .k-loading-image")))
+                            except Exception:
+                                pass
+                        try: disposition_dropdown.click()
+                        except Exception: driver.execute_script("arguments[0].click();", disposition_dropdown)
+                        time.sleep(0.5)
+                        active_el = driver.switch_to.active_element
+                        active_el.send_keys("kwe")
+                        time.sleep(0.3)
+                        active_el.send_keys(Keys.TAB)
+                        time.sleep(0.5)
 
-                    disp_input_text = ""
-                    try:
-                        disp_input_el = disposition_dropdown.find_element(By.CSS_SELECTOR, "span.k-input")
-                        disp_input_text = (disp_input_el.text or driver.execute_script("return arguments[0].textContent;", disp_input_el) or "").strip()
-                    except Exception:
-                        pass
+                        disp_input_text = ""
+                        try:
+                            disp_input_el = disposition_dropdown.find_element(By.CSS_SELECTOR, "span.k-input")
+                            disp_input_text = (disp_input_el.text or driver.execute_script("return arguments[0].textContent;", disp_input_el) or "").strip()
+                        except Exception:
+                            pass
+                        if "KWE" in disp_input_text.upper():
+                            break
 
                     if "KWE" not in disp_input_text.upper():
                         err_msg = f"Disposition 'KWE' selection failed (Current: '{disp_input_text}')"
@@ -2360,40 +2370,48 @@ def _run_apple_open_profile(ctx: _OpenContext):
                         continue
 
                     # [HAWB 작업 7] HANDRV 수정
-                    for crow_data in initial_charges:
-                        if crow_data["code"] == "HANDRV":
-                            row_el = crow_data["row_element"]
-                            terms_wrap = row_el.find_element(By.CSS_SELECTOR, "select[name='terms'] ~ span.k-select, td:nth-child(6) span.k-dropdown-wrap")
-                            try: terms_wrap.click()
-                            except Exception: driver.execute_script("arguments[0].click();", terms_wrap)
-                            time.sleep(0.3)
-                            act_el = driver.switch_to.active_element
-                            act_el.send_keys("P")
-                            time.sleep(0.3)
-                            act_el.send_keys(Keys.TAB)
-                            time.sleep(0.5)
+                    _handrv_src_charges = initial_charges
+                    for _handrv_try in range(3):
+                        for crow_data in _handrv_src_charges:
+                            if crow_data["code"] == "HANDRV":
+                                row_el = crow_data["row_element"]
+                                terms_wrap = row_el.find_element(By.CSS_SELECTOR, "select[name='terms'] ~ span.k-select, td:nth-child(6) span.k-dropdown-wrap")
+                                try: terms_wrap.click()
+                                except Exception: driver.execute_script("arguments[0].click();", terms_wrap)
+                                time.sleep(0.3)
+                                act_el = driver.switch_to.active_element
+                                act_el.send_keys("P")
+                                time.sleep(0.3)
+                                act_el.send_keys(Keys.TAB)
+                                time.sleep(0.5)
 
-                            curr_wrap = row_el.find_element(By.CSS_SELECTOR, "select[name='invoiceCurr'] ~ span.k-select, td:nth-child(10) span.k-dropdown-wrap")
-                            try: curr_wrap.click()
-                            except Exception: driver.execute_script("arguments[0].click();", curr_wrap)
-                            time.sleep(0.3)
-                            act_el = driver.switch_to.active_element
-                            for char in "USD":
-                                act_el.send_keys(char)
-                                time.sleep(0.1)
-                            time.sleep(0.3)
-                            act_el.send_keys(Keys.TAB)
-                            time.sleep(1)
+                                curr_wrap = row_el.find_element(By.CSS_SELECTOR, "select[name='invoiceCurr'] ~ span.k-select, td:nth-child(10) span.k-dropdown-wrap")
+                                try: curr_wrap.click()
+                                except Exception: driver.execute_script("arguments[0].click();", curr_wrap)
+                                time.sleep(0.3)
+                                act_el = driver.switch_to.active_element
+                                for char in "USD":
+                                    act_el.send_keys(char)
+                                    time.sleep(0.1)
+                                time.sleep(0.3)
+                                act_el.send_keys(Keys.TAB)
+                                time.sleep(1)
+                                break
+
+                        time.sleep(2)
+                        try:
+                            WebDriverWait(driver, 10).until_not(EC.presence_of_element_located((By.CSS_SELECTOR, ".k-loading-mask, .k-loading-image")))
+                        except Exception:
+                            pass
+
+                        updated_charges = _open_parse_hawb_charges_grid(driver)
+                        charges_map = {c["code"]: c for c in updated_charges}
+                        _handrv_chk = charges_map.get("HANDRV")
+                        if _handrv_chk is None or (_handrv_chk["terms"] == "Prepaid" and _handrv_chk["inv_curr"] == "USD"):
                             break
-
-                    time.sleep(2)
-                    try:
-                        WebDriverWait(driver, 10).until_not(EC.presence_of_element_located((By.CSS_SELECTOR, ".k-loading-mask, .k-loading-image")))
-                    except Exception:
-                        pass
-
-                    updated_charges = _open_parse_hawb_charges_grid(driver)
-                    charges_map = {c["code"]: c for c in updated_charges}
+                        ctx.log(f"[RETRY] HANDRV Terms/InvoiceCurr not applied (Terms: '{_handrv_chk['terms']}', InvoiceCurr: '{_handrv_chk['inv_curr']}') -> retry {_handrv_try + 1}/2")
+                        _handrv_src_charges = updated_charges
+                        time.sleep(2)
                     handrv_mismatches = []
 
                     if "HANDRV" in charges_map:
